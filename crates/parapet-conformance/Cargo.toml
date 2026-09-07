@@ -1,0 +1,19 @@
+[package]
+name = "parapet-conformance"
+version = "0.0.0"
+description = "Conformance harness measuring Parapet against the OWASP Core Rule Set"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+parapet = { path = "../parapet" }
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

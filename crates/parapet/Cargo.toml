@@ -1,0 +1,19 @@
+[package]
+name = "parapet"
+version = "0.0.0"
+description = "A SecLang rule engine in pure Rust, compatible with the OWASP Core Rule Set"
+keywords = ["waf", "seclang", "modsecurity", "security", "firewall"]
+categories = ["network-programming", "web-programming"]
+readme = "../../README.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+regex.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

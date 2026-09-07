@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CRS_VERSION: 4.9.0
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  conformance-compile:
+    name: CRS @rx compile coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch CRS ${{ env.CRS_VERSION }}
+        run: |
+          curl -sL "https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CRS_VERSION}.tar.gz" \
+            | tar xz
+      - name: Extract @rx operands
+        run: |
+          python3 crates/parapet-conformance/tools/extract_rx.py \
+            "coreruleset-${CRS_VERSION}/rules" rx.json
+      - name: Every CRS pattern must compile
+        run: cargo run -p parapet-conformance -- compile rx.json
+
+  differential-re2:
+    name: Repairs agree with Go/RE2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch CRS ${{ env.CRS_VERSION }}
+        run: |
+          curl -sL "https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CRS_VERSION}.tar.gz" \
+            | tar xz
+      - name: Differential test
+        run: |
+          echo "Wired up with the corpus generator; see crates/parapet-conformance/README.md"

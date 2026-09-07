@@ -1,0 +1,5 @@
+/target
+**/*.rs.bk
+.DS_Store
+/crates/parapet-conformance/corpus
+/crates/parapet-conformance/vendor

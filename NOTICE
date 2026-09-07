@@ -1,0 +1,16 @@
+Parapet
+Copyright 2026 Parapet contributors
+
+This product includes software developed by the Parapet contributors.
+
+Parapet implements the SecLang rule language. SecLang originates with
+ModSecurity and is used by the OWASP Core Rule Set. Parapet contains no
+ModSecurity or Coraza source code.
+
+The conformance suite in crates/parapet-conformance exercises Parapet against
+the OWASP Core Rule Set (https://github.com/coreruleset/coreruleset), which is
+licensed under the Apache License 2.0. The Core Rule Set is not distributed as
+part of this repository; the conformance suite fetches it at test time.
+
+"ModSecurity" and "OWASP" are trademarks of their respective owners. Parapet
+is not affiliated with, endorsed by, or derived from either project.
