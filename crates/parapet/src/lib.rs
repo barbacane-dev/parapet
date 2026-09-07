@@ -36,6 +36,7 @@ pub mod operator;
 pub mod parse;
 pub mod regex_compat;
 pub mod rule;
+pub mod transform;
 
 pub use parse::{parse, parse_all, ParseError};
 pub use rule::{Directive, Rule};

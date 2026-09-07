@@ -18,10 +18,12 @@ let compiled = regex_compat::compile(r"(?i)\bunion\b.{1,100}?\bselect\b")?;
 assert!(compiled.regex.is_match("1 UNION SELECT password FROM users"));
 ```
 
-> **Status: early.** The parser and the regex compatibility layer are
-> implemented and verified against CRS v4.9.0: the full rule set parses with
-> zero errors. There is no evaluation engine yet, so nothing here can inspect
-> a request. The scope table below is the roadmap. Do not deploy this.
+> **Status: early.** The parser, the transformations and the regex
+> compatibility layer are implemented and verified against CRS v4.9.0: the full
+> rule set parses with zero errors, and all 20 transformations are
+> differential-tested against a reference implementation. Operators and the
+> phase engine are next, so nothing here can inspect a request yet. The scope
+> table below is the roadmap. Do not deploy this.
 
 ## Why
 
@@ -85,7 +87,7 @@ actually needs, measured from v4.9.0:
 | `@rx` compatibility layer | 273 patterns | yes | n/a |
 | Directives (in `rules/`) | 4 | yes | no |
 | Operators | 18 | yes | no |
-| Transformations | 20 (plus `none`) | yes | no |
+| Transformations | 20 (plus `none`) | yes | **yes** |
 | Variables / collections | 32 | yes | no |
 | Actions | 23 | yes | no |
 | `ctl:` actions | 6 | yes | no |
@@ -95,6 +97,12 @@ Parsing CRS v4.9.0 yields 660 `SecRule`, 7 `SecAction`, 29 `SecMarker` and 1
 `SecComponentSignature` with zero errors, and CI asserts those counts so a
 parser that quietly stops recognising a construct fails the build rather than
 returning fewer rules.
+
+All 20 transformations are compared against a reference implementation over
+14,480 cases with zero unexpected divergences. Every accepted divergence is a
+predicate over specific inputs with a written reason, not a blanket exemption,
+so a new one still fails the build. Two of them exist because the reference is
+wrong; that harness found both.
 
 Eighteen operators, not the 35+ SecLang defines: `@rx`, `@lt`, `@eq`, `@ge`,
 `@pmFromFile`, `@gt`, `@pm`, `@within`, `@endsWith`, `@validateByteRange`,

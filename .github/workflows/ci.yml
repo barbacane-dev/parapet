@@ -56,6 +56,32 @@ jobs:
           cargo run -p parapet-conformance -- parse \
             "coreruleset-${CRS_VERSION}/rules" "crs-${CRS_VERSION}"
 
+  transform-diff:
+    name: Transformations agree with the reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate the corpus
+        run: |
+          python3 crates/parapet-conformance/tools/gen_transform_corpus.py corpus.json
+      - name: Compute reference outputs
+        run: |
+          git clone --depth 1 https://github.com/corazawaf/coraza.git /tmp/coraza-ref
+          cp crates/parapet-conformance/tools/coraza_probe_test.go \
+            /tmp/coraza-ref/internal/transformations/
+          cd /tmp/coraza-ref
+          PROBE_IN=$GITHUB_WORKSPACE/corpus.json \
+          PROBE_OUT=$GITHUB_WORKSPACE/reference.json \
+            go test ./internal/transformations/ -run TestParapetProbe -v
+      - name: No unexpected divergence
+        run: cargo run -p parapet-conformance -- transform-diff reference.json
+
   differential-re2:
     name: Repairs agree with Go/RE2
     runs-on: ubuntu-latest

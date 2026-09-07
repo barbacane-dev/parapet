@@ -14,6 +14,8 @@
 //!   parapet-conformance extract <crs-rules-dir> <out.json>
 //!   parapet-conformance compile <patterns.json>
 
+mod transform_diff;
+
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
@@ -22,6 +24,17 @@ fn main() -> ExitCode {
     match args.get(1).map(String::as_str) {
         Some("compile") => match args.get(2) {
             Some(path) => compile_report(path),
+            None => usage(),
+        },
+        Some("transform-diff") => match args.get(2) {
+            Some(path) => match transform_diff::run(path) {
+                Ok(0) => ExitCode::SUCCESS,
+                Ok(_) => ExitCode::FAILURE,
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            },
             None => usage(),
         },
         Some("parse") => match args.get(2) {
@@ -35,6 +48,7 @@ fn main() -> ExitCode {
 fn usage() -> ExitCode {
     eprintln!("usage: parapet-conformance compile <patterns.json>");
     eprintln!("       parapet-conformance parse <crs-rules-dir> [crs-4.9.0]");
+    eprintln!("       parapet-conformance transform-diff <reference.json>");
     ExitCode::FAILURE
 }
 
