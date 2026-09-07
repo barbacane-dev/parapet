@@ -1,5 +1,9 @@
 # Parapet
 
+[![CI](https://github.com/barbacane-dev/parapet/actions/workflows/ci.yml/badge.svg)](https://github.com/barbacane-dev/parapet/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+[![CRS @rx coverage](https://img.shields.io/badge/CRS%20v4.9.0%20%40rx-273%2F273-brightgreen)](crates/parapet-conformance)
+
 A SecLang rule engine in pure Rust, compatible with the OWASP Core Rule Set.
 
 No C, no C++, no cgo, no FFI, no garbage collector. One dependency-light crate
