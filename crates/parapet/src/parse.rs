@@ -173,6 +173,27 @@ pub fn parse_all(source: &str, source_name: &str) -> (Vec<Directive>, Vec<ParseE
                     line: line_no,
                 }));
             }
+            "SecDefaultAction" => {
+                if tokens.len() != 2 {
+                    errors.push(arity(1));
+                    continue;
+                }
+                let actions = match parse_actions(&tokens[1]) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        errors.push(err(e.into()));
+                        continue;
+                    }
+                };
+                let phase = actions
+                    .iter()
+                    .find_map(|a| match a {
+                        Action::Phase(p) => Some(*p),
+                        _ => None,
+                    })
+                    .unwrap_or(crate::Phase::RequestBody);
+                out.push(Directive::DefaultAction { phase, actions });
+            }
             "SecMarker" => {
                 if tokens.len() != 2 {
                     errors.push(arity(1));

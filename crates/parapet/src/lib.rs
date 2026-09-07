@@ -32,18 +32,23 @@
 #![warn(missing_docs)]
 
 pub mod action;
+pub mod collections;
+pub mod engine;
 pub mod macros;
 pub mod matcher;
 pub mod operator;
 pub mod parse;
 pub mod regex_compat;
 pub mod rule;
+pub mod transaction;
 pub mod transform;
 
+pub use engine::{CompileError, RuleSet};
 pub use macros::{MacroContext, Template};
 pub use matcher::{CompiledOperator, DataLoader, DirDataLoader, NoDataLoader};
 pub use parse::{parse, parse_all, ParseError};
 pub use rule::{Directive, Rule};
+pub use transaction::{EngineMode, Transaction};
 
 /// Whether a transaction may proceed.
 ///
@@ -68,7 +73,7 @@ pub enum Verdict {
 /// [`Phase::RequestHeaders`], 272 in [`Phase::RequestBody`], 39 in
 /// [`Phase::ResponseHeaders`], 100 in [`Phase::ResponseBody`] and 13 in
 /// [`Phase::Logging`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Phase {
     /// Phase 1.
     RequestHeaders = 1,

@@ -18,10 +18,13 @@ let compiled = regex_compat::compile(r"(?i)\bunion\b.{1,100}?\bselect\b")?;
 assert!(compiled.regex.is_match("1 UNION SELECT password FROM users"));
 ```
 
-> **Status: early.** The parser, the 20 transformations, 16 of the 18
-> operators and the regex compatibility layer are implemented and verified
-> against CRS v4.9.0. The phase engine is next, so nothing here can inspect a
-> request yet. The scope table below is the roadmap. Do not deploy this.
+> **Status: early, but it runs.** Parapet now loads the full OWASP Core Rule
+> Set and inspects requests: 591 rules across all five phases, blocking real
+> SQLi, XSS, LFI and RCE payloads through CRS's own anomaly scoring, with no
+> false positives on the benign corpus. Two operators (`@detectSQLi`,
+> `@detectXSS`) still refuse to compile, so 4 rules are missing, and multipart,
+> JSON and XML bodies are not parsed yet. The CRS regression suite has not been
+> run. Do not deploy this.
 
 ## Why
 
@@ -85,16 +88,22 @@ actually needs, measured from v4.9.0:
 | `@rx` compatibility layer | 273 patterns | yes | n/a |
 | Directives (in `rules/`) | 4 | yes | no |
 | Operators | 18 | yes | **16 of 18** |
+| Rule chaining, `skipAfter`, `setvar`, anomaly scoring | | yes | **yes** |
 | Transformations | 20 (plus `none`) | yes | **yes** |
-| Variables / collections | 32 | yes | no |
-| Actions | 23 | yes | no |
+| Variables / collections | 32 | yes | 30 of 32 |
+| Actions | 23 | yes | most |
 | `ctl:` actions | 6 | yes | no |
-| Phases | 5 | yes | no |
+| Phases | 5 | yes | **yes** |
 
 Parsing CRS v4.9.0 yields 660 `SecRule`, 7 `SecAction`, 29 `SecMarker` and 1
 `SecComponentSignature` with zero errors, and CI asserts those counts so a
 parser that quietly stops recognising a construct fails the build rather than
 returning fewer rules.
+
+End to end against CRS v4.9.0 at the default paranoia level: 12 attack
+requests, 6 benign, 0 wrong verdicts, 1 known gap (the libinjection SQLi rule).
+Blocking comes from CRS rule 949110 on accumulated anomaly score, exactly as a
+real deployment would.
 
 All 20 transformations are compared against a reference implementation over
 14,480 cases with zero unexpected divergences. Every accepted divergence is a

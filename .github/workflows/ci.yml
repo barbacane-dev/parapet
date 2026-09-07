@@ -72,6 +72,22 @@ jobs:
           cargo run -p parapet-conformance -- operators \
             "coreruleset-${CRS_VERSION}/rules"
 
+  end-to-end:
+    name: CRS blocks attacks and allows benign traffic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch CRS ${{ env.CRS_VERSION }}
+        run: |
+          curl -sL "https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CRS_VERSION}.tar.gz" \
+            | tar xz
+      - name: Run the request corpus through the full rule set
+        run: |
+          cargo run -p parapet-conformance -- run \
+            "coreruleset-${CRS_VERSION}/rules"
+
   transform-diff:
     name: Transformations agree with the reference
     runs-on: ubuntu-latest

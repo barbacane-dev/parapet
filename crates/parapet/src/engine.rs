@@ -1,0 +1,422 @@
+//! Compiling parsed directives into an evaluable rule set.
+
+use std::collections::HashMap;
+
+use crate::action::{Action, Ctl, SetVar, SetVarOp, Transformation};
+use crate::macros::Template;
+use crate::matcher::{CompiledOperator, DataLoader, OperatorCompileError};
+use crate::rule::{Directive, Rule, Severity, Target};
+use crate::Phase;
+
+/// What a matching rule does to the transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disruptive {
+    /// `deny`
+    Deny,
+    /// `drop`
+    Drop,
+    /// `block`, which defers to the configured default action.
+    Block,
+    /// `redirect`
+    Redirect,
+    /// `pass`, which is explicitly not disruptive.
+    Pass,
+}
+
+/// A `setvar:` with its operand pre-parsed.
+#[derive(Debug, Clone)]
+pub struct SetVarSpec {
+    /// Variable name, itself a template because CRS writes
+    /// `setvar:'tx.rfi_parameter_%{MATCHED_VAR_NAME}=1'`.
+    pub name: Template,
+    /// How the value combines with the existing one.
+    pub op: SetVarOp,
+    /// The value template. Absent means 1, as SecLang defines.
+    pub value: Option<Template>,
+}
+
+/// One link in a chain after the starter.
+#[derive(Debug)]
+pub struct ChainLink {
+    /// Variables this link inspects.
+    pub targets: Vec<Target>,
+    /// The link's test.
+    pub operator: Option<CompiledOperator>,
+    /// Whether the link's result is inverted.
+    pub negated: bool,
+    /// Transformations applied before the operator, in order.
+    pub transformations: Vec<Transformation>,
+    /// Whether the link exposes regex captures.
+    pub capture: bool,
+    /// `setvar:` actions that run when this link matches.
+    pub setvars: Vec<SetVarSpec>,
+}
+
+/// A rule ready to evaluate.
+#[derive(Debug)]
+pub struct CompiledRule {
+    /// The rule's `id:`, absent on chained rules and some `SecAction`s.
+    pub id: Option<u32>,
+    /// Which phase the rule runs in.
+    pub phase: Phase,
+    /// Variables the rule inspects. Empty for `SecAction`.
+    pub targets: Vec<Target>,
+    /// The rule's test. `None` means always match, as `SecAction` does.
+    pub operator: Option<CompiledOperator>,
+    /// Whether the operator result is inverted.
+    pub negated: bool,
+    /// Transformations applied before the operator, in order.
+    pub transformations: Vec<Transformation>,
+    /// Whether to expose regex captures as `TX:0` through `TX:9`.
+    pub capture: bool,
+    /// Whether to re-evaluate after each transformation.
+    pub multi_match: bool,
+    /// The disruptive action, if any.
+    pub disruptive: Option<Disruptive>,
+    /// The status a disruptive action should use.
+    pub status: Option<u16>,
+    /// `setvar:` actions.
+    pub setvars: Vec<SetVarSpec>,
+    /// `skipAfter:` jump target.
+    pub skip_after: Option<String>,
+    /// `msg:`
+    pub msg: Option<Template>,
+    /// `logdata:`
+    pub logdata: Option<Template>,
+    /// `tag:` values.
+    pub tags: Vec<String>,
+    /// `severity:`
+    pub severity: Option<Severity>,
+    /// `ctl:` actions.
+    pub ctl: Vec<Ctl>,
+    /// Whether logging was explicitly suppressed with `nolog`.
+    pub nolog: bool,
+    /// Remaining links of the chain, all of which must match.
+    pub chain: Vec<ChainLink>,
+    /// Source line, for diagnostics.
+    pub line: usize,
+}
+
+/// An entry in the rule set: a rule, or a `skipAfter` destination.
+#[derive(Debug)]
+enum Entry {
+    Rule(Box<CompiledRule>),
+    Marker,
+}
+
+/// A compiled rule set, ready to run transactions against.
+#[derive(Debug, Default)]
+pub struct RuleSet {
+    entries: Vec<Entry>,
+    marker_index: HashMap<String, usize>,
+}
+
+/// Why a rule set could not be compiled.
+#[derive(Debug, thiserror::Error)]
+pub enum CompileError {
+    /// An operator could not be compiled.
+    #[error("rule {id} (line {line}): {source}")]
+    Operator {
+        /// The rule id, or 0 when it has none.
+        id: u32,
+        /// Source line.
+        line: usize,
+        /// The underlying operator error.
+        #[source]
+        source: OperatorCompileError,
+    },
+    /// A rule declared `chain` but nothing followed it.
+    #[error("rule {id} (line {line}) ends with `chain` but no rule follows it")]
+    DanglingChain {
+        /// The rule id, or 0 when it has none.
+        id: u32,
+        /// Source line.
+        line: usize,
+    },
+    /// A `skipAfter:` names a marker that does not exist.
+    #[error("rule {id} (line {line}) skips to {marker:?}, which no SecMarker defines")]
+    UnknownMarker {
+        /// The rule id, or 0 when it has none.
+        id: u32,
+        /// Source line.
+        line: usize,
+        /// The marker name.
+        marker: String,
+    },
+}
+
+impl RuleSet {
+    /// Compile parsed directives into a rule set, refusing on the first error.
+    ///
+    /// Chained rules are folded into their starter, so the resulting sequence
+    /// is flat and a `skipAfter` cannot land inside a chain.
+    pub fn compile(
+        directives: &[Directive],
+        loader: &dyn DataLoader,
+    ) -> Result<Self, CompileError> {
+        let (set, errors) = Self::compile_all(directives, loader);
+        match errors.into_iter().next() {
+            Some(e) => Err(e),
+            None => Ok(set),
+        }
+    }
+
+    /// Compile parsed directives, collecting every error instead of stopping.
+    ///
+    /// For tooling that needs to measure coverage across a whole rule set.
+    /// Anything that *enforces* rules must treat a non-empty error list as a
+    /// refusal: the rule set returned is missing the rules that failed, and
+    /// enforcing a subset of a rule set silently weakens it. Use
+    /// [`RuleSet::compile`] there.
+    pub fn compile_all(
+        directives: &[Directive],
+        loader: &dyn DataLoader,
+    ) -> (Self, Vec<CompileError>) {
+        Self::compile_inner(directives, loader)
+    }
+
+    fn compile_inner(
+        directives: &[Directive],
+        loader: &dyn DataLoader,
+    ) -> (Self, Vec<CompileError>) {
+        let mut set = RuleSet::default();
+        let mut errors: Vec<CompileError> = Vec::new();
+        let mut pending: Vec<&Rule> = Vec::new();
+        // What `block` resolves to, per phase. ModSecurity's built-in default
+        // is `pass`, so an unconfigured `block` scores without denying.
+        let mut defaults: HashMap<Phase, (Disruptive, Option<u16>)> = HashMap::new();
+
+        for directive in directives {
+            match directive {
+                Directive::Rule(rule) | Directive::Action(rule) => {
+                    pending.push(rule);
+                    if rule.is_chained() {
+                        continue;
+                    }
+                    let (starter, links) = pending.split_at(1);
+                    match compile_rule(starter[0], links, loader) {
+                        Ok(mut compiled) => {
+                            if compiled.disruptive == Some(Disruptive::Block) {
+                                let (resolved, status) = defaults
+                                    .get(&compiled.phase)
+                                    .copied()
+                                    .unwrap_or((Disruptive::Pass, None));
+                                compiled.disruptive = Some(resolved);
+                                if compiled.status.is_none() {
+                                    compiled.status = status;
+                                }
+                            }
+                            set.entries.push(Entry::Rule(Box::new(compiled)));
+                        }
+                        Err(e) => errors.push(e),
+                    }
+                    pending.clear();
+                }
+                Directive::Marker(name) => {
+                    set.marker_index.insert(name.clone(), set.entries.len());
+                    set.entries.push(Entry::Marker);
+                }
+                Directive::DefaultAction { phase, actions } => {
+                    // Only the disruptive action and status matter here; the
+                    // logging defaults do not change what a rule does.
+                    let mut disruptive = Disruptive::Pass;
+                    let mut status = None;
+                    for action in actions {
+                        match action {
+                            Action::Deny => disruptive = Disruptive::Deny,
+                            Action::Drop => disruptive = Disruptive::Drop,
+                            Action::Pass => disruptive = Disruptive::Pass,
+                            Action::Redirect(_) => disruptive = Disruptive::Redirect,
+                            Action::Status(s) => status = Some(*s),
+                            _ => {}
+                        }
+                    }
+                    defaults.insert(*phase, (disruptive, status));
+                }
+                Directive::ComponentSignature(_) => {}
+            }
+        }
+
+        if let Some(open) = pending.first() {
+            errors.push(CompileError::DanglingChain {
+                id: open.id().unwrap_or(0),
+                line: open.line,
+            });
+        }
+
+        // Resolve every skipAfter now, so a typo is a compile error rather
+        // than a jump that silently does nothing at request time.
+        let mut unknown_markers: Vec<CompileError> = Vec::new();
+        for entry in &set.entries {
+            if let Entry::Rule(rule) = entry {
+                if let Some(marker) = &rule.skip_after {
+                    if !set.marker_index.contains_key(marker) {
+                        unknown_markers.push(CompileError::UnknownMarker {
+                            id: rule.id.unwrap_or(0),
+                            line: rule.line,
+                            marker: marker.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        errors.extend(unknown_markers);
+        (set, errors)
+    }
+
+    /// Number of rules, excluding markers.
+    pub fn rule_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Rule(_)))
+            .count()
+    }
+
+    /// Number of `skipAfter` destinations.
+    pub fn marker_count(&self) -> usize {
+        self.marker_index.len()
+    }
+
+    /// Rules in a given phase.
+    pub fn rules_in_phase(&self, phase: Phase) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Rule(r) if r.phase == phase))
+            .count()
+    }
+
+    pub(crate) fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn rule_at(&self, index: usize) -> Option<&CompiledRule> {
+        match self.entries.get(index) {
+            Some(Entry::Rule(rule)) => Some(rule),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn marker_position(&self, name: &str) -> Option<usize> {
+        self.marker_index.get(name).copied()
+    }
+}
+
+fn compile_rule(
+    starter: &Rule,
+    links: &[&Rule],
+    loader: &dyn DataLoader,
+) -> Result<CompiledRule, CompileError> {
+    let id = starter.id();
+    let line = starter.line;
+    let operator = compile_operator(starter, loader)?;
+
+    let mut compiled = CompiledRule {
+        id,
+        // SecLang defaults a rule with no explicit phase to phase 2.
+        phase: Phase::RequestBody,
+        targets: starter.targets.clone(),
+        operator,
+        negated: starter.negated,
+        transformations: Vec::new(),
+        capture: false,
+        multi_match: false,
+        disruptive: None,
+        status: None,
+        setvars: Vec::new(),
+        skip_after: None,
+        msg: None,
+        logdata: None,
+        tags: Vec::new(),
+        severity: None,
+        ctl: Vec::new(),
+        nolog: false,
+        chain: Vec::new(),
+        line,
+    };
+
+    for action in &starter.actions {
+        apply_action(&mut compiled, action);
+    }
+
+    for link in links {
+        let mut chain_link = ChainLink {
+            targets: link.targets.clone(),
+            operator: compile_operator(link, loader)?,
+            negated: link.negated,
+            transformations: Vec::new(),
+            capture: false,
+            setvars: Vec::new(),
+        };
+        for action in &link.actions {
+            match action {
+                Action::Transform(t) => chain_link.transformations.push(*t),
+                Action::Capture => chain_link.capture = true,
+                Action::SetVar(sv) => chain_link.setvars.push(setvar_spec(sv)),
+                // A chained rule carries no metadata or disruptive action of
+                // its own; those belong to the starter.
+                _ => {}
+            }
+        }
+        compiled.chain.push(chain_link);
+    }
+
+    Ok(compiled)
+}
+
+fn compile_operator(
+    rule: &Rule,
+    loader: &dyn DataLoader,
+) -> Result<Option<CompiledOperator>, CompileError> {
+    match &rule.operator {
+        None => Ok(None),
+        Some(op) => CompiledOperator::compile(op, loader)
+            .map(Some)
+            .map_err(|source| CompileError::Operator {
+                id: rule.id().unwrap_or(0),
+                line: rule.line,
+                source,
+            }),
+    }
+}
+
+fn apply_action(rule: &mut CompiledRule, action: &Action) {
+    match action {
+        Action::Id(_) => {}
+        Action::Phase(p) => rule.phase = *p,
+        Action::Msg(m) => rule.msg = Some(Template::parse(m)),
+        Action::LogData(d) => rule.logdata = Some(Template::parse(d)),
+        Action::Tag(t) => rule.tags.push(t.clone()),
+        Action::Severity(s) => rule.severity = Some(*s),
+        Action::Rev(_) | Action::Ver(_) | Action::Accuracy(_) | Action::Maturity(_) => {}
+
+        Action::Block => rule.disruptive = Some(Disruptive::Block),
+        Action::Deny => rule.disruptive = Some(Disruptive::Deny),
+        Action::Drop => rule.disruptive = Some(Disruptive::Drop),
+        Action::Pass => rule.disruptive = Some(Disruptive::Pass),
+        Action::Redirect(_) => rule.disruptive = Some(Disruptive::Redirect),
+        Action::Status(s) => rule.status = Some(*s),
+
+        Action::Chain => {}
+        Action::SkipAfter(m) => rule.skip_after = Some(m.clone()),
+
+        Action::Transform(t) => rule.transformations.push(*t),
+        Action::Capture => rule.capture = true,
+        Action::SetVar(sv) => rule.setvars.push(setvar_spec(sv)),
+        Action::InitCol { .. } => {}
+        Action::MultiMatch => rule.multi_match = true,
+
+        Action::Log | Action::AuditLog | Action::NoAuditLog => {}
+        Action::NoLog => rule.nolog = true,
+
+        Action::Ctl(c) => rule.ctl.push(c.clone()),
+    }
+}
+
+fn setvar_spec(sv: &SetVar) -> SetVarSpec {
+    SetVarSpec {
+        name: Template::parse(&sv.name),
+        op: sv.op,
+        value: sv.value.as_deref().map(Template::parse),
+    }
+}

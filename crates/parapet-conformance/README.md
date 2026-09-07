@@ -50,7 +50,33 @@ The refusal set is itself a gate. A newly refused operator means a rule
 silently stopped being enforceable; a refusal disappearing because it got
 implemented is fine.
 
-## 4. Transformations against a reference implementation
+## 4. End to end
+
+The only check that exercises everything at once. Loads `crs-setup.conf.example`
+plus every rule file, then runs a request corpus through all five phases.
+
+```bash
+cargo run -p parapet-conformance -- run coreruleset-4.9.0/rules
+```
+
+Blocking must come from CRS rule 949110 on accumulated anomaly score, the way a
+real deployment blocks, not from an individual rule denying. The corpus carries
+benign requests too: a false positive is as much a defect as a miss.
+
+Current state: 18 cases, **0 wrong verdicts**, 1 known gap.
+
+Two of the corpus expectations are worth reading, because both were wrong when
+first written and looked like engine bugs:
+
+- `rce backtick` expects **allow**. Rule 932131 covers bare backticks and is
+  tagged `paranoia-level/2`, so CRS at the default level does not block it.
+  Asserting the allow keeps a future change from silently raising the effective
+  paranoia level.
+- `sqli tautology` is a `known_gap`, attributed to rule 942100 needing
+  `@detectSQLi`. Attributed gaps still run and still print; they just do not
+  fail the build.
+
+## 5. Transformations against a reference implementation
 
 Transformations decide what an operator actually sees, so a divergence here is
 a bypass or a false positive rather than a cosmetic difference. Unit tests only
@@ -88,7 +114,7 @@ The two reference bugs were found by this harness and are worth reporting
 upstream. The `jsDecode` one is security-relevant: a CRS rule relying on
 `t:jsDecode` to unmask an octal-escaped payload would not see it.
 
-## 5. Differential against Go/RE2
+## 6. Differential against Go/RE2
 
 Where the engine repairs a pattern in order to compile it, the repair must not
 change what the pattern matches. Go's `regexp` is the reference, because it is
@@ -106,7 +132,7 @@ non-matching inputs: agreement on an all-negative corpus proves nothing.
 
 Last run: 297,129 inputs, 0 disagreements, 1,838 to 6,026 positives per rule.
 
-## 6. CRS regression suite
+## 7. CRS regression suite
 
 The release gate. The Core Rule Set ships 322 YAML regression files (about
 5,000 cases) driven by [`go-ftw`](https://github.com/coreruleset/go-ftw).

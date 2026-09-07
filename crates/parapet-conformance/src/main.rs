@@ -14,6 +14,7 @@
 //!   parapet-conformance extract <crs-rules-dir> <out.json>
 //!   parapet-conformance compile <patterns.json>
 
+mod run;
 mod transform_diff;
 
 use std::collections::BTreeMap;
@@ -28,6 +29,17 @@ fn main() -> ExitCode {
         },
         Some("transform-diff") => match args.get(2) {
             Some(path) => match transform_diff::run(path) {
+                Ok(0) => ExitCode::SUCCESS,
+                Ok(_) => ExitCode::FAILURE,
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            },
+            None => usage(),
+        },
+        Some("run") => match args.get(2) {
+            Some(dir) => match run::run(dir) {
                 Ok(0) => ExitCode::SUCCESS,
                 Ok(_) => ExitCode::FAILURE,
                 Err(e) => {
@@ -54,6 +66,7 @@ fn usage() -> ExitCode {
     eprintln!("       parapet-conformance parse <crs-rules-dir> [crs-4.9.0]");
     eprintln!("       parapet-conformance transform-diff <reference.json>");
     eprintln!("       parapet-conformance operators <crs-rules-dir>");
+    eprintln!("       parapet-conformance run <crs-rules-dir>");
     ExitCode::FAILURE
 }
 
@@ -211,6 +224,7 @@ fn parse_report(dir: &str, expect_tag: Option<&str>) -> ExitCode {
     let mut secactions = 0usize;
     let mut markers = 0usize;
     let mut signatures = 0usize;
+    let mut default_actions = 0usize;
     let mut chained = 0usize;
     let mut with_id = 0usize;
     let mut errors = Vec::new();
@@ -248,6 +262,7 @@ fn parse_report(dir: &str, expect_tag: Option<&str>) -> ExitCode {
                         parapet::Directive::Action(_) => secactions += 1,
                         parapet::Directive::Marker(_) => markers += 1,
                         parapet::Directive::ComponentSignature(_) => signatures += 1,
+                        parapet::Directive::DefaultAction { .. } => default_actions += 1,
                     }
                 }
             }
@@ -261,6 +276,7 @@ fn parse_report(dir: &str, expect_tag: Option<&str>) -> ExitCode {
     println!("SecAction             : {secactions}");
     println!("SecMarker             : {markers}");
     println!("SecComponentSignature : {signatures}");
+    println!("SecDefaultAction      : {default_actions}");
     println!("parse errors          : {}", errors.len());
     let mut mismatches: Vec<String> = Vec::new();
     if let Some(tag) = expect_tag {

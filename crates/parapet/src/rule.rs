@@ -18,6 +18,17 @@ pub enum Directive {
     Marker(String),
     /// `SecComponentSignature SIGNATURE`
     ComponentSignature(String),
+    /// `SecDefaultAction "phase:2,log,auditlog,pass"`
+    ///
+    /// Sets what `block` resolves to for rules that follow it. CRS relies on
+    /// this: its 311 `block` rules are meant to score, not to deny, and the
+    /// denial comes from the explicit `deny` in the blocking-evaluation rules.
+    DefaultAction {
+        /// The phase the default applies to.
+        phase: crate::Phase,
+        /// The actions it sets.
+        actions: Vec<crate::action::Action>,
+    },
 }
 
 /// A rule: what to inspect, what to test, what to do about it.
