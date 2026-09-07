@@ -32,12 +32,16 @@
 #![warn(missing_docs)]
 
 pub mod action;
+pub mod macros;
+pub mod matcher;
 pub mod operator;
 pub mod parse;
 pub mod regex_compat;
 pub mod rule;
 pub mod transform;
 
+pub use macros::{MacroContext, Template};
+pub use matcher::{CompiledOperator, DataLoader, DirDataLoader, NoDataLoader};
 pub use parse::{parse, parse_all, ParseError};
 pub use rule::{Directive, Rule};
 

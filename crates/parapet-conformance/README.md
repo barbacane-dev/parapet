@@ -33,7 +33,24 @@ recognising a construct would still report zero errors while returning fewer
 rules, and a rule set silently short by 40 rules is a rule set with 40
 bypasses. The expectation set turns that into a build failure.
 
-## 3. Transformations against a reference implementation
+## 3. Operator compile coverage
+
+Every operator in a pinned CRS release must compile, including resolving the
+`@pmFromFile` data files off disk.
+
+```bash
+cargo run -p parapet-conformance -- operators coreruleset-4.9.0/rules
+```
+
+Expected against v4.9.0: 18 distinct operators, 19 data files, 656 of 660
+operator instances compiling, and exactly two refusals (`@detectSQLi` and
+`@detectXSS`, 4 rules).
+
+The refusal set is itself a gate. A newly refused operator means a rule
+silently stopped being enforceable; a refusal disappearing because it got
+implemented is fine.
+
+## 4. Transformations against a reference implementation
 
 Transformations decide what an operator actually sees, so a divergence here is
 a bypass or a false positive rather than a cosmetic difference. Unit tests only
@@ -71,7 +88,7 @@ The two reference bugs were found by this harness and are worth reporting
 upstream. The `jsDecode` one is security-relevant: a CRS rule relying on
 `t:jsDecode` to unmask an octal-escaped payload would not see it.
 
-## 4. Differential against Go/RE2
+## 5. Differential against Go/RE2
 
 Where the engine repairs a pattern in order to compile it, the repair must not
 change what the pattern matches. Go's `regexp` is the reference, because it is
@@ -89,7 +106,7 @@ non-matching inputs: agreement on an all-negative corpus proves nothing.
 
 Last run: 297,129 inputs, 0 disagreements, 1,838 to 6,026 positives per rule.
 
-## 5. CRS regression suite
+## 6. CRS regression suite
 
 The release gate. The Core Rule Set ships 322 YAML regression files (about
 5,000 cases) driven by [`go-ftw`](https://github.com/coreruleset/go-ftw).

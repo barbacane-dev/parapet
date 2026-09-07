@@ -56,6 +56,22 @@ jobs:
           cargo run -p parapet-conformance -- parse \
             "coreruleset-${CRS_VERSION}/rules" "crs-${CRS_VERSION}"
 
+  conformance-operators:
+    name: CRS operator compile coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch CRS ${{ env.CRS_VERSION }}
+        run: |
+          curl -sL "https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CRS_VERSION}.tar.gz" \
+            | tar xz
+      - name: Every CRS operator must compile, or be a known refusal
+        run: |
+          cargo run -p parapet-conformance -- operators \
+            "coreruleset-${CRS_VERSION}/rules"
+
   transform-diff:
     name: Transformations agree with the reference
     runs-on: ubuntu-latest

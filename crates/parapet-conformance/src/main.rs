@@ -37,6 +37,10 @@ fn main() -> ExitCode {
             },
             None => usage(),
         },
+        Some("operators") => match args.get(2) {
+            Some(dir) => operator_report(dir),
+            None => usage(),
+        },
         Some("parse") => match args.get(2) {
             Some(dir) => parse_report(dir, args.get(3).map(String::as_str)),
             None => usage(),
@@ -49,12 +53,120 @@ fn usage() -> ExitCode {
     eprintln!("usage: parapet-conformance compile <patterns.json>");
     eprintln!("       parapet-conformance parse <crs-rules-dir> [crs-4.9.0]");
     eprintln!("       parapet-conformance transform-diff <reference.json>");
+    eprintln!("       parapet-conformance operators <crs-rules-dir>");
     ExitCode::FAILURE
 }
 
 /// Parse every `.conf` in a CRS rules directory. Any failure is a defect: CRS
 /// is the compatibility bar, so a rule Parapet cannot parse is a rule it would
 /// have silently failed to enforce.
+/// Compile every operator in a CRS rule set, including resolving the
+/// `@pmFromFile` data files. An operator that fails to compile is a rule that
+/// cannot be enforced, so the only acceptable failures are the ones Parapet
+/// deliberately refuses.
+fn operator_report(dir: &str) -> ExitCode {
+    use parapet::matcher::{CompiledOperator, DirDataLoader};
+
+    let loader = DirDataLoader::new(dir);
+    let mut files: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "conf"))
+            .collect(),
+        Err(e) => {
+            eprintln!("cannot read {dir}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    files.sort();
+
+    let mut by_operator: BTreeMap<&'static str, (usize, usize)> = BTreeMap::new();
+    let mut refused: BTreeMap<String, usize> = BTreeMap::new();
+    let mut failures: Vec<String> = Vec::new();
+    let mut data_files: std::collections::BTreeSet<String> = Default::default();
+
+    for path in &files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let Ok(src) = std::fs::read_to_string(path) else {
+            failures.push(format!("{name}: cannot read"));
+            continue;
+        };
+        let (directives, errors) = parapet::parse_all(&src, &name);
+        for e in errors {
+            failures.push(e.to_string());
+        }
+        for d in &directives {
+            let parapet::Directive::Rule(rule) = d else {
+                continue;
+            };
+            let Some(op) = &rule.operator else { continue };
+            if let parapet::operator::Operator::PmFromFile(f) = op {
+                data_files.insert(f.clone());
+            }
+            let entry = by_operator.entry(op.name()).or_insert((0, 0));
+            entry.0 += 1;
+            match CompiledOperator::compile(op, &loader) {
+                Ok(_) => entry.1 += 1,
+                Err(parapet::matcher::OperatorCompileError::NotImplemented { name, .. }) => {
+                    *refused.entry(name.to_string()).or_default() += 1;
+                }
+                Err(e) => failures.push(format!("{name}:{} rule {:?}: {e}", rule.line, rule.id())),
+            }
+        }
+    }
+
+    println!("distinct operators used : {}", by_operator.len());
+    println!("@pmFromFile data files  : {}", data_files.len());
+    println!();
+    println!("{:<24} {:>7} {:>9}", "operator", "uses", "compiled");
+    for (op, (uses, compiled)) in &by_operator {
+        let note = if compiled < uses { "  <- refused" } else { "" };
+        println!(
+            "{:<24} {:>7} {:>9}{}",
+            format!("@{op}"),
+            uses,
+            compiled,
+            note
+        );
+    }
+
+    if !refused.is_empty() {
+        println!("\ndeliberately refused (would be a silent bypass if compiled):");
+        for (name, count) in &refused {
+            println!("  @{name}: {count} uses");
+        }
+    }
+
+    // The refusal set is itself a gate. A newly refused operator means a rule
+    // silently stopped being enforceable, which is the thing this crate exists
+    // to make impossible; going the other way (a refusal disappearing because
+    // it got implemented) is fine.
+    const KNOWN_REFUSALS: &[&str] = &["detectSQLi", "detectXSS"];
+    let unexpected_refusals: Vec<&String> = refused
+        .keys()
+        .filter(|name| !KNOWN_REFUSALS.contains(&name.as_str()))
+        .collect();
+
+    println!("\nunexpected failures     : {}", failures.len());
+    for f in failures.iter().take(20) {
+        println!("  {f}");
+    }
+    if !unexpected_refusals.is_empty() {
+        println!("unexpected refusals     : {unexpected_refusals:?}");
+    }
+
+    if failures.is_empty() && unexpected_refusals.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 /// Directive counts for a known CRS release, measured independently of the
 /// parser. Asserting them catches a parser that stops recognising a construct
 /// and silently returns fewer rules, which a zero-error run alone would miss.

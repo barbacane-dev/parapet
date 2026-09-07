@@ -18,12 +18,10 @@ let compiled = regex_compat::compile(r"(?i)\bunion\b.{1,100}?\bselect\b")?;
 assert!(compiled.regex.is_match("1 UNION SELECT password FROM users"));
 ```
 
-> **Status: early.** The parser, the transformations and the regex
-> compatibility layer are implemented and verified against CRS v4.9.0: the full
-> rule set parses with zero errors, and all 20 transformations are
-> differential-tested against a reference implementation. Operators and the
-> phase engine are next, so nothing here can inspect a request yet. The scope
-> table below is the roadmap. Do not deploy this.
+> **Status: early.** The parser, the 20 transformations, 16 of the 18
+> operators and the regex compatibility layer are implemented and verified
+> against CRS v4.9.0. The phase engine is next, so nothing here can inspect a
+> request yet. The scope table below is the roadmap. Do not deploy this.
 
 ## Why
 
@@ -86,7 +84,7 @@ actually needs, measured from v4.9.0:
 |---|---|---|---|
 | `@rx` compatibility layer | 273 patterns | yes | n/a |
 | Directives (in `rules/`) | 4 | yes | no |
-| Operators | 18 | yes | no |
+| Operators | 18 | yes | **16 of 18** |
 | Transformations | 20 (plus `none`) | yes | **yes** |
 | Variables / collections | 32 | yes | no |
 | Actions | 23 | yes | no |
@@ -108,6 +106,12 @@ Eighteen operators, not the 35+ SecLang defines: `@rx`, `@lt`, `@eq`, `@ge`,
 `@pmFromFile`, `@gt`, `@pm`, `@within`, `@endsWith`, `@validateByteRange`,
 `@streq`, `@contains`, `@validateUrlEncoding`, `@ipMatch`, `@detectXSS`,
 `@detectSQLi`, `@unconditionalMatch`, `@validateUtf8Encoding`.
+
+Sixteen compile and evaluate today. `@detectSQLi` and `@detectXSS` parse but
+**refuse to compile**, because they need a libinjection classifier that is not
+integrated yet and compiling them to something that never matches would turn
+four CRS rules into silent bypasses. CI asserts that the refusal set is exactly
+those two, so a newly refused operator fails the build.
 
 Known hard parts, called out rather than discovered later: multipart parsing
 edge cases, `XML` selection (175 target references in CRS), persistent
