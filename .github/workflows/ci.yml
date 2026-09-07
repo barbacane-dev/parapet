@@ -40,6 +40,22 @@ jobs:
       - name: Every CRS pattern must compile
         run: cargo run -p parapet-conformance -- compile rx.json
 
+  conformance-parse:
+    name: CRS parse coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch CRS ${{ env.CRS_VERSION }}
+        run: |
+          curl -sL "https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CRS_VERSION}.tar.gz" \
+            | tar xz
+      - name: Every CRS directive must parse, with the expected counts
+        run: |
+          cargo run -p parapet-conformance -- parse \
+            "coreruleset-${CRS_VERSION}/rules" "crs-${CRS_VERSION}"
+
   differential-re2:
     name: Repairs agree with Go/RE2
     runs-on: ubuntu-latest

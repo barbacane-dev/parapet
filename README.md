@@ -3,6 +3,7 @@
 [![CI](https://github.com/barbacane-dev/parapet/actions/workflows/ci.yml/badge.svg)](https://github.com/barbacane-dev/parapet/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CRS @rx coverage](https://img.shields.io/badge/CRS%20v4.9.0%20%40rx-273%2F273-brightgreen)](crates/parapet-conformance)
+[![CRS parse coverage](https://img.shields.io/badge/CRS%20v4.9.0%20directives-697%2F697-brightgreen)](crates/parapet-conformance)
 
 A SecLang rule engine in pure Rust, compatible with the OWASP Core Rule Set.
 
@@ -17,9 +18,10 @@ let compiled = regex_compat::compile(r"(?i)\bunion\b.{1,100}?\bselect\b")?;
 assert!(compiled.regex.is_match("1 UNION SELECT password FROM users"));
 ```
 
-> **Status: early.** The regex compatibility layer is implemented and verified
-> against CRS v4.9.0. The parser, operators, transformations and phase engine
-> are in progress. The scope table below is the roadmap. Do not deploy this.
+> **Status: early.** The parser and the regex compatibility layer are
+> implemented and verified against CRS v4.9.0: the full rule set parses with
+> zero errors. There is no evaluation engine yet, so nothing here can inspect
+> a request. The scope table below is the roadmap. Do not deploy this.
 
 ## Why
 
@@ -78,15 +80,21 @@ means no ReDoS surface from operator-supplied rules.
 SecLang defines far more than the Core Rule Set uses. Parapet targets what CRS
 actually needs, measured from v4.9.0:
 
-| Surface | Distinct | Status |
-|---|---|---|
-| `@rx` compatibility layer | 273 patterns | done |
-| Operators | 18 | todo |
-| Transformations | 20 (plus `none`) | todo |
-| Variables / collections | 32 | todo |
-| `ctl:` actions | 6 | todo |
-| Phases | 5 | todo |
-| Directives (in `rules/`) | 4 | todo |
+| Surface | Distinct | Parsed | Evaluated |
+|---|---|---|---|
+| `@rx` compatibility layer | 273 patterns | yes | n/a |
+| Directives (in `rules/`) | 4 | yes | no |
+| Operators | 18 | yes | no |
+| Transformations | 20 (plus `none`) | yes | no |
+| Variables / collections | 32 | yes | no |
+| Actions | 23 | yes | no |
+| `ctl:` actions | 6 | yes | no |
+| Phases | 5 | yes | no |
+
+Parsing CRS v4.9.0 yields 660 `SecRule`, 7 `SecAction`, 29 `SecMarker` and 1
+`SecComponentSignature` with zero errors, and CI asserts those counts so a
+parser that quietly stops recognising a construct fails the build rather than
+returning fewer rules.
 
 Eighteen operators, not the 35+ SecLang defines: `@rx`, `@lt`, `@eq`, `@ge`,
 `@pmFromFile`, `@gt`, `@pm`, `@within`, `@endsWith`, `@validateByteRange`,

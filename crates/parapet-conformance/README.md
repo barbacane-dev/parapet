@@ -16,7 +16,24 @@ cargo run -p parapet-conformance -- compile rx.json
 Expected against v4.9.0: 273 unique patterns, 268 compiling as authored, 5
 after repair, 0 failing. A non-zero failure count exits non-zero.
 
-## 2. Differential against Go/RE2
+## 2. Parse coverage
+
+Every directive in a pinned CRS release must parse, and the directive counts
+must match figures measured independently of the parser.
+
+```bash
+cargo run -p parapet-conformance -- parse coreruleset-4.9.0/rules crs-4.9.0
+```
+
+Expected against v4.9.0: 660 `SecRule`, 7 `SecAction`, 29 `SecMarker`, 1
+`SecComponentSignature`, 73 chain starters, 587 rules carrying an `id:`.
+
+The counts matter as much as the zero-error result. A parser that stops
+recognising a construct would still report zero errors while returning fewer
+rules, and a rule set silently short by 40 rules is a rule set with 40
+bypasses. The expectation set turns that into a build failure.
+
+## 3. Differential against Go/RE2
 
 Where the engine repairs a pattern in order to compile it, the repair must not
 change what the pattern matches. Go's `regexp` is the reference, because it is
@@ -34,7 +51,7 @@ non-matching inputs: agreement on an all-negative corpus proves nothing.
 
 Last run: 297,129 inputs, 0 disagreements, 1,838 to 6,026 positives per rule.
 
-## 3. CRS regression suite
+## 4. CRS regression suite
 
 The release gate. The Core Rule Set ships 322 YAML regression files (about
 5,000 cases) driven by [`go-ftw`](https://github.com/coreruleset/go-ftw).

@@ -24,13 +24,159 @@ fn main() -> ExitCode {
             Some(path) => compile_report(path),
             None => usage(),
         },
+        Some("parse") => match args.get(2) {
+            Some(dir) => parse_report(dir, args.get(3).map(String::as_str)),
+            None => usage(),
+        },
         _ => usage(),
     }
 }
 
 fn usage() -> ExitCode {
     eprintln!("usage: parapet-conformance compile <patterns.json>");
+    eprintln!("       parapet-conformance parse <crs-rules-dir> [crs-4.9.0]");
     ExitCode::FAILURE
+}
+
+/// Parse every `.conf` in a CRS rules directory. Any failure is a defect: CRS
+/// is the compatibility bar, so a rule Parapet cannot parse is a rule it would
+/// have silently failed to enforce.
+/// Directive counts for a known CRS release, measured independently of the
+/// parser. Asserting them catches a parser that stops recognising a construct
+/// and silently returns fewer rules, which a zero-error run alone would miss.
+struct Expected {
+    rules: usize,
+    secactions: usize,
+    markers: usize,
+    signatures: usize,
+    chained: usize,
+    with_id: usize,
+}
+
+fn expected_for(tag: &str) -> Option<Expected> {
+    match tag {
+        "crs-4.9.0" => Some(Expected {
+            rules: 660,
+            secactions: 7,
+            markers: 29,
+            signatures: 1,
+            chained: 73,
+            with_id: 587,
+        }),
+        _ => None,
+    }
+}
+
+fn parse_report(dir: &str, expect_tag: Option<&str>) -> ExitCode {
+    let mut files: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "conf"))
+            .collect(),
+        Err(e) => {
+            eprintln!("cannot read {dir}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    files.sort();
+
+    let mut rules = 0usize;
+    let mut secactions = 0usize;
+    let mut markers = 0usize;
+    let mut signatures = 0usize;
+    let mut chained = 0usize;
+    let mut with_id = 0usize;
+    let mut errors = Vec::new();
+
+    for path in &files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let src = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                errors.push(format!("{name}: cannot read: {e}"));
+                continue;
+            }
+        };
+        let (directives, file_errors) = parapet::parse_all(&src, &name);
+        for e in file_errors {
+            errors.push(e.to_string());
+        }
+        {
+            {
+                for d in &directives {
+                    match d {
+                        parapet::Directive::Rule(r) => {
+                            rules += 1;
+                            if r.is_chained() {
+                                chained += 1;
+                            }
+                            if r.id().is_some() {
+                                with_id += 1;
+                            }
+                        }
+                        parapet::Directive::Action(_) => secactions += 1,
+                        parapet::Directive::Marker(_) => markers += 1,
+                        parapet::Directive::ComponentSignature(_) => signatures += 1,
+                    }
+                }
+            }
+        }
+    }
+
+    println!("files parsed          : {}", files.len());
+    println!("SecRule               : {rules}");
+    println!("  chain starters      : {chained}");
+    println!("  carrying an id      : {with_id}");
+    println!("SecAction             : {secactions}");
+    println!("SecMarker             : {markers}");
+    println!("SecComponentSignature : {signatures}");
+    println!("parse errors          : {}", errors.len());
+    let mut mismatches: Vec<String> = Vec::new();
+    if let Some(tag) = expect_tag {
+        let Some(exp) = expected_for(tag) else {
+            eprintln!("unknown expectation set {tag:?}");
+            return ExitCode::FAILURE;
+        };
+        let mut check = |what: &str, got: usize, want: usize| {
+            if got != want {
+                mismatches.push(format!("{what}: expected {want}, parsed {got}"));
+            }
+        };
+        check("SecRule", rules, exp.rules);
+        check("SecAction", secactions, exp.secactions);
+        check("SecMarker", markers, exp.markers);
+        check("SecComponentSignature", signatures, exp.signatures);
+        check("chain starters", chained, exp.chained);
+        check("rules carrying an id", with_id, exp.with_id);
+        println!(
+            "\nexpectation set {tag}: {}",
+            if mismatches.is_empty() {
+                "matched"
+            } else {
+                "MISMATCH"
+            }
+        );
+        for m in &mismatches {
+            println!("  {m}");
+        }
+    }
+    for e in errors.iter().take(25) {
+        println!("  {e}");
+    }
+    if errors.len() > 25 {
+        println!("  ... and {} more", errors.len() - 25);
+    }
+
+    if errors.is_empty() && mismatches.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 /// Report how much of a CRS `@rx` corpus compiles, and what needed repair.

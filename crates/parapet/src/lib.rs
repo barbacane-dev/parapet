@@ -23,14 +23,22 @@
 //!
 //! # Status
 //!
-//! Early. [`regex_compat`] is implemented and verified against CRS v4.9.0. The
-//! remaining modules are in progress; see the repository README for the scope
-//! inventory and the order of work.
+//! Early. The parser ([`parse`]) and the `@rx` compatibility layer
+//! ([`regex_compat`]) are implemented and verified against CRS v4.9.0. The
+//! evaluation engine is not written yet: nothing here can inspect a request.
+//! See the repository README for the scope inventory and the order of work.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod action;
+pub mod operator;
+pub mod parse;
 pub mod regex_compat;
+pub mod rule;
+
+pub use parse::{parse, parse_all, ParseError};
+pub use rule::{Directive, Rule};
 
 /// Whether a transaction may proceed.
 ///
