@@ -201,9 +201,28 @@ impl<'r> Transaction<'r> {
                 }
             }
             "MULTIPART" => {
-                self.body_error = Some(BodyError::UnsupportedFormat(
-                    "multipart bodies are not parsed yet",
-                ));
+                let header_ct = self
+                    .vars
+                    .request_headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, value)| String::from_utf8_lossy(value).into_owned());
+                let ct = header_ct
+                    .as_deref()
+                    .or(content_type)
+                    .unwrap_or_default()
+                    .to_string();
+                match crate::multipart::boundary_of(&ct) {
+                    None => {
+                        self.body_error = Some(BodyError::Malformed(
+                            "multipart Content-Type has no boundary".to_string(),
+                        ))
+                    }
+                    Some(boundary) => match crate::multipart::parse(body, &boundary) {
+                        Ok(parsed) => self.absorb_multipart(parsed),
+                        Err(detail) => self.body_error = Some(BodyError::Malformed(detail)),
+                    },
+                }
             }
             "XML" => match crate::xml::parse(body) {
                 Ok(values) => {
@@ -235,6 +254,31 @@ impl<'r> Transaction<'r> {
 
         if self.body_error.is_some() {
             self.vars.tx_set("reqbody_error", b"1".to_vec());
+        }
+    }
+
+    /// Distribute multipart parts across the collections SecLang exposes.
+    fn absorb_multipart(&mut self, parsed: crate::multipart::Multipart) {
+        for part in parsed.parts {
+            for (name, line) in &part.header_lines {
+                self.vars
+                    .multipart_part_headers
+                    .push(name.clone(), line.clone());
+            }
+            let field = part.name.clone().unwrap_or_default();
+            match &part.filename {
+                // A file part contributes its *filename* to FILES, keyed by
+                // the form field. That is what rule 920120 inspects when it
+                // looks for a filename crafted to bypass a lenient parser.
+                Some(filename) => {
+                    self.vars
+                        .files
+                        .push(field.clone(), filename.as_bytes().to_vec());
+                    self.vars.files_content_size += part.content.len();
+                }
+                // A plain field behaves like a urlencoded argument.
+                None => self.vars.args_post.push(field, part.content.clone()),
+            }
         }
     }
 
@@ -975,17 +1019,87 @@ SecRule ARGS "@rx attack" "id:3,phase:1,pass,setvar:'tx.reached=1'"
         assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
     }
 
+    /// Build a multipart transaction and run it through phase 2.
+    fn multipart<'r>(rs: &'r RuleSet, body: &str) -> Transaction<'r> {
+        let mut tx = Transaction::new(rs, EngineMode::Blocking);
+        tx.process_uri("POST", "/upload", "HTTP/1.1");
+        tx.add_request_header("Content-Type", "multipart/form-data; boundary=BOUND");
+        tx.process_request_headers();
+        tx.set_request_body(body.replace('\n', "\r\n").as_bytes(), None);
+        tx
+    }
+
     #[test]
-    fn a_multipart_body_still_fails_closed() {
-        // No multipart parser yet, so the body is refused rather than
-        // inspected as an empty collection.
+    fn a_multipart_field_is_inspectable_as_an_argument() {
+        let rs = rules(r#"SecRule ARGS "@rx payload" "id:1,phase:2,deny""#);
+        let mut tx = multipart(
+            &rs,
+            "--BOUND
+Content-Disposition: form-data; name=\"field\"
+
+payload
+--BOUND--
+",
+        );
+        assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn an_uploaded_filename_is_inspectable_through_files() {
+        // Rule 920120's real trigger, taken from its own regression test: an
+        // `=` inside the filename, which a lenient server may parse
+        // differently from the WAF in front of it.
+        let rs = rules(r#"SecRule FILES|FILES_NAMES "!@rx ^[^\"';=]*$" "id:1,phase:2,deny""#);
+        let mut tx = multipart(
+            &rs,
+            "--BOUND\nContent-Disposition: form-data; name=\"fileRap\"; filename=\"file=.txt\"\n\nx\n--BOUND--\n",
+        );
+        assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
+
+        let mut clean = multipart(
+            &rs,
+            "--BOUND\nContent-Disposition: form-data; name=\"f\"; filename=\"report.pdf\"\n\nx\n--BOUND--\n",
+        );
+        assert_eq!(clean.process_request_body(), Verdict::Allow);
+    }
+
+    #[test]
+    fn part_headers_are_inspectable_with_their_names_intact() {
+        // Rule 922110's shape, transformations included: it matches
+        // `^content-type\s*:\s*(.*)$` against a lowercased value, so the
+        // header name has to still be in the value.
+        let rs = rules(
+            r#"SecRule MULTIPART_PART_HEADERS "@rx ^content-type\s*:\s*(.*)$" "id:1,phase:2,deny,t:none,t:lowercase""#,
+        );
+        let mut tx = multipart(
+            &rs,
+            "--BOUND\nContent-Disposition: form-data; name=\"f\"\nContent-Type: text/plain\n\nx\n--BOUND--\n",
+        );
+        assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn a_multipart_body_without_a_boundary_fails_closed() {
         let rs = rules(r#"SecRule TX:REQBODY_ERROR "@eq 1" "id:1,phase:2,deny""#);
         let mut tx = Transaction::new(&rs, EngineMode::Blocking);
         tx.process_uri("POST", "/", "HTTP/1.1");
-        tx.add_request_header("Content-Type", "multipart/form-data; boundary=x");
+        tx.add_request_header("Content-Type", "multipart/form-data");
         tx.process_request_headers();
         tx.set_request_body(b"--x\r\n\r\n", None);
         assert!(tx.body_error().is_some());
+        assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn an_unparseable_multipart_body_fails_closed() {
+        let rs = rules(r#"SecRule TX:REQBODY_ERROR "@eq 1" "id:1,phase:2,deny""#);
+        let mut tx = multipart(
+            &rs,
+            "there is no boundary in here at all
+",
+        );
+        assert!(tx.body_error().is_some());
+        assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
     }
 
     #[test]

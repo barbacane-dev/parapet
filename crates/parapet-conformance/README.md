@@ -143,7 +143,7 @@ python3 tools/ftw_to_json.py coreruleset-4.9.0/tests/regression/tests ftw.json
 cargo run -p parapet-conformance -- ftw coreruleset-4.9.0/rules ftw.json 91.0
 ```
 
-Current state: **3,558 of 3,853 stages pass (92.3%)**, 21 skipped
+Current state: **3,635 of 3,853 stages pass (94.3%)**, 21 skipped
 (status-only assertions), 10 not converted (`encoded_request`, a raw-request
 form).
 

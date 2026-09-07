@@ -83,6 +83,10 @@ pub struct Variables {
     pub tx: Multimap,
     /// `FILES`, from a multipart body.
     pub files: Multimap,
+    /// `MULTIPART_PART_HEADERS`, keyed by header name, valued with the whole
+    /// raw header line. CRS matches `^content-type\s*:\s*(.*)$` against the
+    /// value, so the name has to stay in it.
+    pub multipart_part_headers: Multimap,
     /// `XML:/*`, element text content from a parsed XML body.
     pub xml_elements: Multimap,
     /// `XML://@*`, attribute values from a parsed XML body.
@@ -116,6 +120,9 @@ pub struct Variables {
     pub unique_id: Vec<u8>,
     /// `REQBODY_PROCESSOR`
     pub reqbody_processor: Vec<u8>,
+    /// Total bytes of uploaded file content, for `FILES_COMBINED_SIZE`. The
+    /// `FILES` collection holds filenames, so its own size is not the answer.
+    pub files_content_size: usize,
 
     /// `MATCHED_VAR`, the value that satisfied the last operator.
     pub matched_var: Vec<u8>,
@@ -297,10 +304,12 @@ impl Variables {
                 }
                 _ => {}
             },
-            // Populated only by a multipart parser, which does not exist yet.
-            // A multipart request sets REQBODY_ERROR instead of being
-            // inspected against an empty collection.
-            MultipartPartHeaders => {}
+            MultipartPartHeaders => push_map(
+                out,
+                prefix,
+                &self.multipart_part_headers,
+                target.selector.as_ref(),
+            ),
         }
     }
 

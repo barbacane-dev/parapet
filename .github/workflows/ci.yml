@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
   CRS_VERSION: 4.9.0
   # Ratchet only. Raise it when the pass rate improves; never lower it.
-  FTW_BASELINE: "92.0"
+  FTW_BASELINE: "94.0"
 
 jobs:
   test:

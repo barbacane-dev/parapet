@@ -37,6 +37,7 @@ pub mod engine;
 pub mod json;
 pub mod macros;
 pub mod matcher;
+pub mod multipart;
 pub mod operator;
 pub mod parse;
 pub mod regex_compat;

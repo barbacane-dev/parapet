@@ -4,7 +4,7 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CRS @rx coverage](https://img.shields.io/badge/CRS%20v4.9.0%20%40rx-273%2F273-brightgreen)](crates/parapet-conformance)
 [![CRS parse coverage](https://img.shields.io/badge/CRS%20v4.9.0%20directives-697%2F697-brightgreen)](crates/parapet-conformance)
-[![CRS regression suite](https://img.shields.io/badge/CRS%20regression%20suite-92.3%25-yellow)](crates/parapet-conformance)
+[![CRS regression suite](https://img.shields.io/badge/CRS%20regression%20suite-94.3%25-yellowgreen)](crates/parapet-conformance)
 
 A SecLang rule engine in pure Rust, compatible with the OWASP Core Rule Set.
 
@@ -20,10 +20,10 @@ assert!(compiled.regex.is_match("1 UNION SELECT password FROM users"));
 ```
 
 > **Status: early, but measured.** Parapet loads the full OWASP Core Rule Set
-> and passes **92.3% of the CRS regression suite** (3,558 of 3,853 stages) with
-> the configuration CRS documents for its own tests. XML and JSON bodies are
-> parsed; multipart is not, and two operators (`@detectSQLi`, `@detectXSS`)
-> still refuse to compile. Do not deploy this: the remaining 7.7% is where the
+> and passes **94.3% of the CRS regression suite** (3,635 of 3,853 stages) with
+> the configuration CRS documents for its own tests. Urlencoded, multipart, XML
+> and JSON bodies are all parsed. Two operators (`@detectSQLi`, `@detectXSS`)
+> still refuse to compile. Do not deploy this: the remaining 5.7% is where the
 > bypasses live, and a WAF is only as good as its worst gap.
 
 ## Why
@@ -90,8 +90,9 @@ actually needs, measured from v4.9.0:
 | Operators | 18 | yes | **16 of 18** |
 | Rule chaining, `skipAfter`, `setvar`, anomaly scoring | | yes | **yes** |
 | Transformations | 20 (plus `none`) | yes | **yes** |
-| Variables / collections | 32 | yes | 30 of 32 |
+| Variables / collections | 32 | yes | **32 of 32** |
 | Actions | 23 | yes | most |
+| Body formats | 4 | n/a | **urlencoded, multipart, XML, JSON** |
 | `ctl:` actions | 7 | yes | **yes** |
 | Phases | 5 | yes | **yes** |
 
@@ -100,18 +101,20 @@ Parsing CRS v4.9.0 yields 660 `SecRule`, 7 `SecAction`, 29 `SecMarker` and 1
 parser that quietly stops recognising a construct fails the build rather than
 returning fewer rules.
 
-**CRS regression suite: 3,558 of 3,853 stages pass (92.3%).** The corpus is
+**CRS regression suite: 3,635 of 3,853 stages pass (94.3%).** The corpus is
 CRS's own, run in process with the configuration `tests/regression/README.md`
 documents. CI gates on a ratcheting baseline, so the number can only go up.
 
-Where the remaining 295 failures are, in order:
+Where the remaining 218 failures are, in order:
 
 | Cause | Stages | Note |
 |---|---|---|
-| Individual rule gaps | ~180 | `932235`, `931130`, `920420`, `920480`, spread thin |
-| Multipart bodies not parsed | ~45 | `920120` and friends test multipart bypasses |
-| `@detectSQLi` / `@detectXSS` missing | ~23 | rules 941100/941101/942100/942101 |
-| Over-matching | 3 | `942440` only |
+| Individual rule gaps | ~180 | a genuine long tail, nothing above 24 stages |
+| `@detectSQLi` / `@detectXSS` missing | 30 | rules 941100/941101/942100/942101 |
+| Over-matching | 6 | `942440` leads, 3 stages |
+
+The body-format gaps are closed. What remains is per-rule semantics, which is
+slower per point than the structural work was.
 
 Libinjection is not the dominant gap. That was worth measuring rather than
 assuming: it is under 10% of what is left, and the earlier plan had it as the
