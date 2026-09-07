@@ -83,6 +83,10 @@ pub struct Variables {
     pub tx: Multimap,
     /// `FILES`, from a multipart body.
     pub files: Multimap,
+    /// `XML:/*`, element text content from a parsed XML body.
+    pub xml_elements: Multimap,
+    /// `XML://@*`, attribute values from a parsed XML body.
+    pub xml_attributes: Multimap,
 
     /// `REQUEST_METHOD`
     pub request_method: Vec<u8>,
@@ -281,10 +285,22 @@ impl Variables {
             ReqbodyProcessor => push_scalar(out, prefix, self.reqbody_processor.clone()),
             MatchedVar => push_scalar(out, prefix, self.matched_var.clone()),
 
-            // Populated only by body parsers that do not exist yet. A request
-            // in one of those formats sets REQBODY_ERROR instead of being
+            // CRS addresses XML with exactly two XPath expressions. Anything
+            // else is refused at compile time, so reaching here with another
+            // form is impossible rather than silently empty.
+            Xml => match target.selector.as_ref() {
+                Some(Selector::XPath(expr)) if expr.trim() == "/*" => {
+                    push_map(out, prefix, &self.xml_elements, None)
+                }
+                Some(Selector::XPath(expr)) if expr.trim() == "//@*" => {
+                    push_map(out, prefix, &self.xml_attributes, None)
+                }
+                _ => {}
+            },
+            // Populated only by a multipart parser, which does not exist yet.
+            // A multipart request sets REQBODY_ERROR instead of being
             // inspected against an empty collection.
-            MultipartPartHeaders | Xml => {}
+            MultipartPartHeaders => {}
         }
     }
 

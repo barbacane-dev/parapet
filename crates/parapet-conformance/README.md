@@ -143,7 +143,7 @@ python3 tools/ftw_to_json.py coreruleset-4.9.0/tests/regression/tests ftw.json
 cargo run -p parapet-conformance -- ftw coreruleset-4.9.0/rules ftw.json 91.0
 ```
 
-Current state: **3,509 of 3,853 stages pass (91.1%)**, 21 skipped
+Current state: **3,558 of 3,853 stages pass (92.3%)**, 21 skipped
 (status-only assertions), 10 not converted (`encoded_request`, a raw-request
 form).
 
@@ -168,6 +168,13 @@ body implies `Content-Type: application/x-www-form-urlencoded` and a
 `Content-Length` unless the test sets them. Without that the urlencoded parser
 never runs, `ARGS_POST` stays empty, and most of the 2,416 body-carrying
 stages fail for a reason that has nothing to do with rules.
+
+**A rising number is not always progress.** An earlier run scored 91.1%
+because `REQUEST_BODY` was populated for every content type, so rules matched
+raw XML and JSON text by accident. Fixing that dropped the rate to 79.0%,
+which was the honest number, and parsing XML and JSON properly brought it to
+92.3%. A conformance number is only as good as the semantics underneath it,
+and the drop was the useful signal.
 
 **Detection-only, deliberately.** The assertions are about which rules appear
 in the log, so a disruptive action that ended the transaction early would hide

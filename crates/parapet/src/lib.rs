@@ -34,6 +34,7 @@
 pub mod action;
 pub mod collections;
 pub mod engine;
+pub mod json;
 pub mod macros;
 pub mod matcher;
 pub mod operator;
@@ -42,6 +43,7 @@ pub mod regex_compat;
 pub mod rule;
 pub mod transaction;
 pub mod transform;
+pub mod xml;
 
 pub use engine::{CompileError, RuleSet};
 pub use macros::{MacroContext, Template};

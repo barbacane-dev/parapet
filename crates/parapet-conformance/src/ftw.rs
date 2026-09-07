@@ -175,6 +175,27 @@ pub fn run(
         for id in &unexpected {
             *false_positives.entry(*id).or_default() += 1;
         }
+        // PARAPET_FOCUS=<rule id> dumps every failing stage involving that
+        // rule in full, which is how you actually debug one.
+        if let Ok(focus) = std::env::var("PARAPET_FOCUS") {
+            if let Ok(focus) = focus.parse::<u32>() {
+                if missing.contains(&focus) || unexpected.contains(&focus) {
+                    println!(
+                        "--- {} {}\n    {} {} ({})\n    data: {:?}\n    expected {:?}  missing {:?}  unexpected {:?}\n    fired: {:?}",
+                        stage.label(),
+                        stage.desc,
+                        stage.method,
+                        stage.uri,
+                        stage.version,
+                        stage.data.as_deref().unwrap_or(""),
+                        stage.expect_ids,
+                        missing,
+                        unexpected,
+                        fired.iter().copied().collect::<Vec<_>>(),
+                    );
+                }
+            }
+        }
         if examples.len() < 12 {
             examples.push(format!(
                 "{:<28} {}\n      expected {:?} missing {:?} unexpected {:?}",

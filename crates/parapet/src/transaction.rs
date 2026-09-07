@@ -59,6 +59,10 @@ pub struct Transaction<'r> {
     removed_targets: Vec<(RuleSelector, String)>,
     /// Set by `ctl:ruleEngine=Off`, which stops further evaluation.
     engine_off: bool,
+    /// Set by `ctl:forceRequestBodyVariable`, which populates `REQUEST_BODY`
+    /// for a body the engine would otherwise only expose through a parsed
+    /// collection.
+    force_request_body_variable: bool,
 }
 
 /// One operator evaluation: what to inspect, how to prepare it, and what to
@@ -96,6 +100,7 @@ impl<'r> Transaction<'r> {
             removed_tags: Default::default(),
             removed_targets: Vec::new(),
             engine_off: false,
+            force_request_body_variable: false,
         }
     }
 
@@ -147,46 +152,87 @@ impl<'r> Transaction<'r> {
     }
 
     /// Run phase 1.
+    ///
+    /// The body processor is chosen here, from `Content-Type`, because phase-1
+    /// rules inspect `REQBODY_PROCESSOR` to decide how the body should be
+    /// handled. CRS rule 901340 is exactly that: it forces `REQUEST_BODY` only
+    /// when the processor is not one it recognises.
     pub fn process_request_headers(&mut self) -> Verdict {
+        if self.vars.reqbody_processor.is_empty() {
+            let ct = self
+                .vars
+                .request_headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                .map(|(_, value)| String::from_utf8_lossy(value).into_owned())
+                .unwrap_or_default();
+            self.vars.reqbody_processor = processor_for(&ct).as_bytes().to_vec();
+        }
         self.run_phase(Phase::RequestHeaders)
     }
 
-    /// Supply the request body and parse it according to `content_type`.
+    /// Supply the request body.
+    ///
+    /// `content_type` is a fallback for embedders that did not add the header;
+    /// the header wins when both are present, since that is what the rules saw
+    /// in phase 1.
+    ///
+    /// `REQUEST_BODY` is populated only for a urlencoded body, or when
+    /// `ctl:forceRequestBodyVariable` asked for it. This is not a detail: rules
+    /// that target `REQUEST_BODY` would otherwise match raw XML or JSON that
+    /// the request never meant as form data, and 16 stages of the CRS
+    /// regression suite exist to catch exactly that false positive.
     ///
     /// A body in a format with no parser sets a body error, which SecLang
     /// exposes as `REQBODY_ERROR`. That is deliberate: an XML payload must be
     /// refused rather than inspected against an empty collection.
     pub fn set_request_body(&mut self, body: &[u8], content_type: Option<&str>) {
-        self.vars.request_body = body.to_vec();
-        let ct = content_type.unwrap_or("").to_ascii_lowercase();
-        let base = ct.split(';').next().unwrap_or("").trim();
-        match base {
-            "application/x-www-form-urlencoded" => {
-                self.vars.reqbody_processor = b"URLENCODED".to_vec();
+        if self.vars.reqbody_processor.is_empty() {
+            let derived = processor_for(content_type.unwrap_or(""));
+            self.vars.reqbody_processor = derived.as_bytes().to_vec();
+        }
+        let processor = String::from_utf8_lossy(&self.vars.reqbody_processor).into_owned();
+
+        match processor.as_str() {
+            "URLENCODED" => {
+                self.vars.request_body = body.to_vec();
                 for (name, value) in parse_urlencoded(body) {
                     self.vars.args_post.push(name, value);
                 }
             }
-            "multipart/form-data" => {
-                self.vars.reqbody_processor = b"MULTIPART".to_vec();
+            "MULTIPART" => {
                 self.body_error = Some(BodyError::UnsupportedFormat(
                     "multipart bodies are not parsed yet",
                 ));
             }
-            "text/xml" | "application/xml" | "application/soap+xml" => {
-                self.vars.reqbody_processor = b"XML".to_vec();
-                self.body_error = Some(BodyError::UnsupportedFormat(
-                    "XML bodies are not parsed yet",
-                ));
-            }
-            "application/json" => {
-                self.vars.reqbody_processor = b"JSON".to_vec();
-                self.body_error = Some(BodyError::UnsupportedFormat(
-                    "JSON bodies are not parsed yet",
-                ));
-            }
+            "XML" => match crate::xml::parse(body) {
+                Ok(values) => {
+                    for (name, value) in values.elements {
+                        self.vars.xml_elements.push(name, value);
+                    }
+                    for (name, value) in values.attributes {
+                        self.vars.xml_attributes.push(name, value);
+                    }
+                }
+                Err(detail) => self.body_error = Some(BodyError::Malformed(detail)),
+            },
+            "JSON" => match crate::json::flatten(body) {
+                Ok(pairs) => {
+                    for (name, value) in pairs {
+                        self.vars.args_post.push(name, value);
+                    }
+                }
+                Err(detail) => self.body_error = Some(BodyError::Malformed(detail)),
+            },
+            // No recognised processor. The raw bytes are only exposed if a rule
+            // asked for them, which is what CRS rule 901340 does.
             _ => {}
         }
+
+        if self.force_request_body_variable && self.vars.request_body.is_empty() {
+            self.vars.request_body = body.to_vec();
+        }
+
         if self.body_error.is_some() {
             self.vars.tx_set("reqbody_error", b"1".to_vec());
         }
@@ -353,9 +399,10 @@ impl<'r> Transaction<'r> {
                     .push((RuleSelector::Tag(tag.clone()), target.clone())),
                 // Audit logging is not implemented, so this changes nothing.
                 Ctl::AuditEngine(_) => {}
-                // Body handling is decided when the body arrives, which is
-                // before any phase-2 rule can run.
-                Ctl::ForceRequestBodyVariable(_) | Ctl::RequestBodyProcessor(_) => {}
+                Ctl::ForceRequestBodyVariable(on) => self.force_request_body_variable = *on,
+                Ctl::RequestBodyProcessor(name) => {
+                    self.vars.reqbody_processor = name.to_ascii_uppercase().into_bytes();
+                }
             }
         }
     }
@@ -553,6 +600,24 @@ impl<'r> Transaction<'r> {
             tags: rule.tags.clone(),
             matched_name: String::from_utf8_lossy(&self.vars.matched_var_name).into_owned(),
         });
+    }
+}
+
+/// Which body processor a `Content-Type` selects, using the names SecLang
+/// exposes through `REQBODY_PROCESSOR`. An unrecognised type selects none.
+fn processor_for(content_type: &str) -> &'static str {
+    let base = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match base.as_str() {
+        "application/x-www-form-urlencoded" => "URLENCODED",
+        "multipart/form-data" => "MULTIPART",
+        "text/xml" | "application/xml" | "application/soap+xml" => "XML",
+        "application/json" => "JSON",
+        _ => "",
     }
 }
 
@@ -896,17 +961,117 @@ SecRule ARGS "@rx attack" "id:3,phase:1,pass,setvar:'tx.reached=1'"
 
     #[test]
     fn an_unparseable_body_sets_a_body_error_rather_than_passing() {
-        // A format with no parser must not be silently treated as empty. CRS
+        // A body the parser cannot read must not be reported as clean. CRS
         // blocks on REQBODY_ERROR, which is the mechanism SecLang provides.
         let rs = rules(
             r#"SecRule TX:REQBODY_ERROR "@eq 1" "id:1,phase:2,deny,msg:'body could not be parsed'""#,
         );
         let mut tx = Transaction::new(&rs, EngineMode::Blocking);
         tx.process_uri("POST", "/", "HTTP/1.1");
+        tx.add_request_header("Content-Type", "application/json");
         tx.process_request_headers();
-        tx.set_request_body(b"<x>attack</x>", Some("text/xml"));
+        tx.set_request_body(b"{not valid json", Some("application/json"));
         assert!(tx.body_error().is_some());
         assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn a_multipart_body_still_fails_closed() {
+        // No multipart parser yet, so the body is refused rather than
+        // inspected as an empty collection.
+        let rs = rules(r#"SecRule TX:REQBODY_ERROR "@eq 1" "id:1,phase:2,deny""#);
+        let mut tx = Transaction::new(&rs, EngineMode::Blocking);
+        tx.process_uri("POST", "/", "HTTP/1.1");
+        tx.add_request_header("Content-Type", "multipart/form-data; boundary=x");
+        tx.process_request_headers();
+        tx.set_request_body(b"--x\r\n\r\n", None);
+        assert!(tx.body_error().is_some());
+    }
+
+    #[test]
+    fn an_xml_body_is_parsed_into_the_xml_collection() {
+        let rs = rules(r#"SecRule XML:/*|XML://@* "@rx payload" "id:1,phase:2,deny""#);
+        // Element text.
+        let mut tx = Transaction::new(&rs, EngineMode::Blocking);
+        tx.process_uri("POST", "/", "HTTP/1.1");
+        tx.add_request_header("Content-Type", "application/xml");
+        tx.process_request_headers();
+        tx.set_request_body(br#"<x><a>payload</a></x>"#, None);
+        assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
+
+        // Attribute value.
+        let mut tx = Transaction::new(&rs, EngineMode::Blocking);
+        tx.process_uri("POST", "/", "HTTP/1.1");
+        tx.add_request_header("Content-Type", "application/xml");
+        tx.process_request_headers();
+        tx.set_request_body(br#"<x><a v="payload"/></x>"#, None);
+        assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn a_json_body_is_flattened_into_args() {
+        let rs = rules(r#"SecRule ARGS "@rx payload" "id:1,phase:2,deny""#);
+        let mut tx = Transaction::new(&rs, EngineMode::Blocking);
+        tx.process_uri("POST", "/", "HTTP/1.1");
+        tx.add_request_header("Content-Type", "application/json");
+        tx.process_request_headers();
+        tx.set_request_body(br#"{"field": "payload"}"#, None);
+        assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn request_body_is_not_populated_for_a_parsed_format() {
+        // A rule targeting REQUEST_BODY must not match raw XML or JSON that
+        // the request never meant as form data. This is a false-positive
+        // source that 16 stages of the CRS suite exist to catch.
+        let rs = rules(r#"SecRule REQUEST_BODY "@rx payload" "id:1,phase:2,deny""#);
+
+        let mut tx = Transaction::new(&rs, EngineMode::Blocking);
+        tx.process_uri("POST", "/", "HTTP/1.1");
+        tx.add_request_header("Content-Type", "application/xml");
+        tx.process_request_headers();
+        tx.set_request_body(br#"<x><a>payload</a></x>"#, None);
+        assert_eq!(tx.process_request_body(), Verdict::Allow);
+
+        // A urlencoded body does populate it.
+        let mut tx = Transaction::new(&rs, EngineMode::Blocking);
+        tx.process_uri("POST", "/", "HTTP/1.1");
+        tx.add_request_header("Content-Type", "application/x-www-form-urlencoded");
+        tx.process_request_headers();
+        tx.set_request_body(b"q=payload", None);
+        assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn force_request_body_variable_exposes_an_unparsed_body() {
+        // CRS rule 901340 does exactly this for a content type with no
+        // processor, so rules can still inspect the raw bytes.
+        let rs = rules(
+            r#"
+SecRule REQBODY_PROCESSOR "!@rx (?:URLENCODED|MULTIPART|XML|JSON)" "id:1,phase:1,pass,nolog,ctl:forceRequestBodyVariable=On"
+SecRule REQUEST_BODY "@rx payload" "id:2,phase:2,deny"
+"#,
+        );
+        let mut tx = Transaction::new(&rs, EngineMode::Blocking);
+        tx.process_uri("POST", "/", "HTTP/1.1");
+        tx.add_request_header("Content-Type", "application/octet-stream");
+        tx.process_request_headers();
+        tx.set_request_body(b"raw payload here", None);
+        assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn an_unsupported_xpath_is_a_compile_error() {
+        let directives = parse(
+            r#"SecRule XML:/root/child "@rx x" "id:1,phase:2,deny""#,
+            "test.conf",
+        )
+        .unwrap();
+        let err = RuleSet::compile(&directives, &NoDataLoader).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::engine::CompileError::UnsupportedXPath { .. }
+        ));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::action::{Action, Ctl, SetVar, SetVarOp, Transformation};
 use crate::macros::Template;
 use crate::matcher::{CompiledOperator, DataLoader, OperatorCompileError};
-use crate::rule::{Directive, Rule, Severity, Target};
+use crate::rule::{Collection, Directive, Rule, Selector, Severity, Target};
 use crate::Phase;
 
 /// What a matching rule does to the transaction.
@@ -132,6 +132,21 @@ pub enum CompileError {
         id: u32,
         /// Source line.
         line: usize,
+    },
+    /// An XPath expression Parapet cannot evaluate.
+    ///
+    /// Refused rather than resolved to nothing: a target that inspects nothing
+    /// is a rule that cannot fire, and it would do so silently.
+    #[error("rule {id} (line {line}) selects XML with {expression:?}; only {supported:?} are implemented")]
+    UnsupportedXPath {
+        /// The rule id, or 0 when it has none.
+        id: u32,
+        /// Source line.
+        line: usize,
+        /// The expression as written.
+        expression: String,
+        /// The expressions that are implemented.
+        supported: &'static [&'static str],
     },
     /// A `skipAfter:` names a marker that does not exist.
     #[error("rule {id} (line {line}) skips to {marker:?}, which no SecMarker defines")]
@@ -309,6 +324,7 @@ fn compile_rule(
 ) -> Result<CompiledRule, CompileError> {
     let id = starter.id();
     let line = starter.line;
+    check_targets(&starter.targets, id, line)?;
     let operator = compile_operator(starter, loader)?;
 
     let mut compiled = CompiledRule {
@@ -340,6 +356,11 @@ fn compile_rule(
     }
 
     for link in links {
+        check_targets(
+            &link.targets,
+            link.id().unwrap_or(id.unwrap_or(0)),
+            link.line,
+        )?;
         let mut chain_link = ChainLink {
             targets: link.targets.clone(),
             operator: compile_operator(link, loader)?,
@@ -362,6 +383,31 @@ fn compile_rule(
     }
 
     Ok(compiled)
+}
+
+/// Reject targets Parapet cannot resolve, before they become silent no-ops.
+fn check_targets(
+    targets: &[Target],
+    id: impl Into<Option<u32>>,
+    line: usize,
+) -> Result<(), CompileError> {
+    let id = id.into();
+    for target in targets {
+        if target.collection != Collection::Xml {
+            continue;
+        }
+        if let Some(Selector::XPath(expression)) = &target.selector {
+            if !crate::xml::xpath_is_supported(expression) {
+                return Err(CompileError::UnsupportedXPath {
+                    id: id.unwrap_or(0),
+                    line,
+                    expression: expression.clone(),
+                    supported: crate::xml::SUPPORTED_XPATH,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn compile_operator(
