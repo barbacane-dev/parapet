@@ -8,6 +8,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CRS_VERSION: 4.9.0
+  # Ratchet only. Raise it when the pass rate improves; never lower it.
+  FTW_BASELINE: "91.0"
 
 jobs:
   test:
@@ -71,6 +73,27 @@ jobs:
         run: |
           cargo run -p parapet-conformance -- operators \
             "coreruleset-${CRS_VERSION}/rules"
+
+  crs-regression-suite:
+    name: CRS regression suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: pip install --quiet pyyaml
+      - name: Fetch CRS ${{ env.CRS_VERSION }}
+        run: |
+          curl -sL "https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CRS_VERSION}.tar.gz" \
+            | tar xz
+      - name: Convert the FTW corpus
+        run: |
+          python3 crates/parapet-conformance/tools/ftw_to_json.py \
+            "coreruleset-${CRS_VERSION}/tests/regression/tests" ftw.json
+      - name: Run it, against a ratcheting baseline
+        run: |
+          cargo run -p parapet-conformance -- ftw \
+            "coreruleset-${CRS_VERSION}/rules" ftw.json ${{ env.FTW_BASELINE }}
 
   end-to-end:
     name: CRS blocks attacks and allows benign traffic

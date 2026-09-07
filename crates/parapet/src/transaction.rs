@@ -4,7 +4,7 @@
 //! `process_*` call runs the rules for that phase. Evaluation stops at the
 //! first disruptive action, as SecLang specifies.
 
-use crate::action::{SetVarOp, Transformation};
+use crate::action::{Ctl, RuleEngineMode, SetVarOp, Transformation};
 use crate::collections::{BodyError, Value, Variables};
 use crate::engine::{ChainLink, CompiledRule, Disruptive, RuleSet, SetVarSpec};
 use crate::matcher::CompiledOperator;
@@ -25,6 +25,9 @@ pub enum EngineMode {
 /// One rule that matched.
 #[derive(Debug, Clone)]
 pub struct RuleMatch {
+    /// Whether the rule would appear in the audit log. A `nolog` rule still
+    /// matched and still scored; it just does not log.
+    pub logged: bool,
     /// The rule's id.
     pub id: Option<u32>,
     /// The expanded `msg:`.
@@ -48,6 +51,34 @@ pub struct Transaction<'r> {
     matches: Vec<RuleMatch>,
     body_error: Option<BodyError>,
     completed: Option<Phase>,
+    /// Rules switched off for this transaction by `ctl:ruleRemoveById`.
+    removed_ids: std::collections::HashSet<u32>,
+    /// Rules switched off by `ctl:ruleRemoveByTag`.
+    removed_tags: std::collections::HashSet<String>,
+    /// Targets removed from specific rules by `ctl:ruleRemoveTargetById`.
+    removed_targets: Vec<(RuleSelector, String)>,
+    /// Set by `ctl:ruleEngine=Off`, which stops further evaluation.
+    engine_off: bool,
+}
+
+/// One operator evaluation: what to inspect, how to prepare it, and what to
+/// test it with.
+struct Step<'a> {
+    targets: &'a [Target],
+    operator: &'a CompiledOperator,
+    negated: bool,
+    transformations: &'a [Transformation],
+    capture: bool,
+    multi_match: bool,
+    /// Targets removed by `ctl:ruleRemoveTarget*`.
+    excluded: &'a [String],
+}
+
+/// How a `ctl:ruleRemoveTarget*` names the rules it applies to.
+#[derive(Debug, Clone)]
+enum RuleSelector {
+    Id(String),
+    Tag(String),
 }
 
 impl<'r> Transaction<'r> {
@@ -61,6 +92,10 @@ impl<'r> Transaction<'r> {
             matches: Vec::new(),
             body_error: None,
             completed: None,
+            removed_ids: Default::default(),
+            removed_tags: Default::default(),
+            removed_targets: Vec::new(),
+            engine_off: false,
         }
     }
 
@@ -207,6 +242,11 @@ impl<'r> Transaction<'r> {
         &self.matches
     }
 
+    /// The ids of every rule that matched.
+    pub fn matched_ids(&self) -> Vec<u32> {
+        self.matches.iter().filter_map(|m| m.id).collect()
+    }
+
     /// The last phase that ran to completion.
     pub fn last_completed_phase(&self) -> Option<Phase> {
         self.completed
@@ -233,6 +273,10 @@ impl<'r> Transaction<'r> {
                 index += 1;
                 continue;
             }
+            if self.engine_off || self.is_removed(rule) {
+                index += 1;
+                continue;
+            }
 
             if !self.evaluate(rule) {
                 index += 1;
@@ -241,6 +285,7 @@ impl<'r> Transaction<'r> {
 
             self.record_match(rule);
             self.apply_setvars(&rule.setvars);
+            self.apply_ctl(rule);
 
             if let Some(marker) = &rule.skip_after {
                 if let Some(position) = self.rules.marker_position(marker) {
@@ -272,6 +317,63 @@ impl<'r> Transaction<'r> {
         self.verdict.clone()
     }
 
+    /// Whether a `ctl:` action has switched this rule off for the transaction.
+    fn is_removed(&self, rule: &CompiledRule) -> bool {
+        if let Some(id) = rule.id {
+            if self.removed_ids.contains(&id) {
+                return true;
+            }
+        }
+        rule.tags.iter().any(|t| self.removed_tags.contains(t))
+    }
+
+    fn apply_ctl(&mut self, rule: &CompiledRule) {
+        for ctl in &rule.ctl {
+            match ctl {
+                Ctl::RuleEngine(mode) => match mode {
+                    // DetectionOnly and Off differ for a real engine; here both
+                    // stop disruption, and Off also stops evaluation.
+                    RuleEngineMode::Off => self.engine_off = true,
+                    RuleEngineMode::DetectionOnly => self.mode = EngineMode::DetectionOnly,
+                    RuleEngineMode::On => self.mode = EngineMode::Blocking,
+                },
+                Ctl::RuleRemoveById(spec) => {
+                    for id in parse_id_range(spec) {
+                        self.removed_ids.insert(id);
+                    }
+                }
+                Ctl::RuleRemoveByTag(tag) => {
+                    self.removed_tags.insert(tag.clone());
+                }
+                Ctl::RuleRemoveTargetById { rule, target } => self
+                    .removed_targets
+                    .push((RuleSelector::Id(rule.clone()), target.clone())),
+                Ctl::RuleRemoveTargetByTag { tag, target } => self
+                    .removed_targets
+                    .push((RuleSelector::Tag(tag.clone()), target.clone())),
+                // Audit logging is not implemented, so this changes nothing.
+                Ctl::AuditEngine(_) => {}
+                // Body handling is decided when the body arrives, which is
+                // before any phase-2 rule can run.
+                Ctl::ForceRequestBodyVariable(_) | Ctl::RequestBodyProcessor(_) => {}
+            }
+        }
+    }
+
+    /// Targets this rule must not inspect, per `ctl:ruleRemoveTarget*`.
+    fn removed_targets_for(&self, rule: &CompiledRule) -> Vec<String> {
+        self.removed_targets
+            .iter()
+            .filter(|(selector, _)| match selector {
+                RuleSelector::Id(id) => {
+                    rule.id.is_some_and(|rid| parse_id_range(id).contains(&rid))
+                }
+                RuleSelector::Tag(tag) => rule.tags.contains(tag),
+            })
+            .map(|(_, target)| target.clone())
+            .collect()
+    }
+
     /// Evaluate a rule, including every link of its chain.
     fn evaluate(&mut self, rule: &CompiledRule) -> bool {
         // A rule with no operator (SecAction) always matches.
@@ -279,14 +381,16 @@ impl<'r> Transaction<'r> {
             return true;
         };
 
-        let Some(hit) = self.evaluate_step(
-            &rule.targets,
+        let excluded = self.removed_targets_for(rule);
+        let Some(hit) = self.evaluate_step(Step {
+            targets: &rule.targets,
             operator,
-            rule.negated,
-            &rule.transformations,
-            rule.capture,
-            rule.multi_match,
-        ) else {
+            negated: rule.negated,
+            transformations: &rule.transformations,
+            capture: rule.capture,
+            multi_match: rule.multi_match,
+            excluded: &excluded,
+        }) else {
             return false;
         };
 
@@ -307,14 +411,15 @@ impl<'r> Transaction<'r> {
             self.apply_setvars(&link.setvars);
             return true;
         };
-        let Some(hit) = self.evaluate_step(
-            &link.targets,
+        let Some(hit) = self.evaluate_step(Step {
+            targets: &link.targets,
             operator,
-            link.negated,
-            &link.transformations,
-            link.capture,
-            false,
-        ) else {
+            negated: link.negated,
+            transformations: &link.transformations,
+            capture: link.capture,
+            multi_match: false,
+            excluded: &[],
+        }) else {
             return false;
         };
         self.vars.matched_var = hit.value.clone();
@@ -327,16 +432,20 @@ impl<'r> Transaction<'r> {
     ///
     /// Returns the first value that satisfied the operator, which is what
     /// `MATCHED_VAR` reports.
-    fn evaluate_step(
-        &mut self,
-        targets: &[Target],
-        operator: &CompiledOperator,
-        negated: bool,
-        transformations: &[Transformation],
-        capture: bool,
-        multi_match: bool,
-    ) -> Option<Value> {
-        let values = self.vars.resolve(targets);
+    fn evaluate_step(&mut self, step: Step<'_>) -> Option<Value> {
+        let Step {
+            targets,
+            operator,
+            negated,
+            transformations,
+            capture,
+            multi_match,
+            excluded,
+        } = step;
+        let mut values = self.vars.resolve(targets);
+        if !excluded.is_empty() {
+            values.retain(|v| !excluded.iter().any(|ex| v.name.eq_ignore_ascii_case(ex)));
+        }
         let mut captures: Option<Vec<Vec<u8>>> = None;
         let mut hit: Option<Value> = None;
 
@@ -431,21 +540,32 @@ impl<'r> Transaction<'r> {
     }
 
     fn record_match(&mut self, rule: &CompiledRule) {
-        if rule.nolog && rule.msg.is_none() {
-            return;
-        }
         let expand = |t: &Option<crate::macros::Template>| -> String {
             t.as_ref()
                 .map(|t| String::from_utf8_lossy(&t.expand(&self.vars)).into_owned())
                 .unwrap_or_default()
         };
         self.matches.push(RuleMatch {
+            logged: !rule.nolog,
             id: rule.id,
             message: expand(&rule.msg),
             data: expand(&rule.logdata),
             tags: rule.tags.clone(),
             matched_name: String::from_utf8_lossy(&self.vars.matched_var_name).into_owned(),
         });
+    }
+}
+
+/// Parse a `ctl:ruleRemoveById` operand, which is an id or an inclusive
+/// `start-end` range.
+fn parse_id_range(spec: &str) -> Vec<u32> {
+    let spec = spec.trim();
+    match spec.split_once('-') {
+        Some((lo, hi)) => match (lo.trim().parse::<u32>(), hi.trim().parse::<u32>()) {
+            (Ok(lo), Ok(hi)) if lo <= hi && hi - lo < 100_000 => (lo..=hi).collect(),
+            _ => Vec::new(),
+        },
+        None => spec.parse::<u32>().map(|id| vec![id]).unwrap_or_default(),
     }
 }
 

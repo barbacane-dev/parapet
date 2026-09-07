@@ -14,6 +14,7 @@
 //!   parapet-conformance extract <crs-rules-dir> <out.json>
 //!   parapet-conformance compile <patterns.json>
 
+mod ftw;
 mod run;
 mod transform_diff;
 
@@ -37,6 +38,21 @@ fn main() -> ExitCode {
                 }
             },
             None => usage(),
+        },
+        Some("ftw") => match (args.get(2), args.get(3)) {
+            (Some(rules), Some(corpus)) => match ftw::run(
+                rules,
+                corpus,
+                args.get(4).and_then(|v| v.parse::<f64>().ok()),
+            ) {
+                Ok(0) => ExitCode::SUCCESS,
+                Ok(_) => ExitCode::FAILURE,
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            },
+            _ => usage(),
         },
         Some("run") => match args.get(2) {
             Some(dir) => match run::run(dir) {
@@ -67,6 +83,7 @@ fn usage() -> ExitCode {
     eprintln!("       parapet-conformance transform-diff <reference.json>");
     eprintln!("       parapet-conformance operators <crs-rules-dir>");
     eprintln!("       parapet-conformance run <crs-rules-dir>");
+    eprintln!("       parapet-conformance ftw <crs-rules-dir> <corpus.json> [min-pass-rate]");
     ExitCode::FAILURE
 }
 

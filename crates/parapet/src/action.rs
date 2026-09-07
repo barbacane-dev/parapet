@@ -92,13 +92,31 @@ pub enum SetVarOp {
 #[derive(Debug, Clone, PartialEq)]
 #[allow(missing_docs)]
 pub enum Ctl {
+    /// `ctl:ruleEngine=On|Off|DetectionOnly`
+    RuleEngine(RuleEngineMode),
     AuditEngine(String),
     ForceRequestBodyVariable(bool),
     RequestBodyProcessor(String),
     RuleRemoveById(String),
     RuleRemoveByTag(String),
-    RuleRemoveTargetById { rule: String, target: String },
-    RuleRemoveTargetByTag { tag: String, target: String },
+    RuleRemoveTargetById {
+        rule: String,
+        target: String,
+    },
+    RuleRemoveTargetByTag {
+        tag: String,
+        target: String,
+    },
+}
+
+/// What `ctl:ruleEngine` switches the engine to for the rest of the
+/// transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub enum RuleEngineMode {
+    On,
+    Off,
+    DetectionOnly,
 }
 
 /// The transformations CRS applies.
@@ -354,6 +372,12 @@ fn parse_ctl(arg: &str) -> Result<Ctl, String> {
             .ok_or_else(|| format!("{name} expects RULE;TARGET, found {value:?}"))
     };
     Ok(match name {
+        "ruleEngine" => Ctl::RuleEngine(match value.to_ascii_lowercase().as_str() {
+            "on" => RuleEngineMode::On,
+            "off" => RuleEngineMode::Off,
+            "detectiononly" => RuleEngineMode::DetectionOnly,
+            other => return Err(format!("unknown ruleEngine value {other:?}")),
+        }),
         "auditEngine" => Ctl::AuditEngine(value.to_string()),
         "forceRequestBodyVariable" => {
             Ctl::ForceRequestBodyVariable(value.eq_ignore_ascii_case("on"))

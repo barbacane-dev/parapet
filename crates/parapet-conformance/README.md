@@ -134,15 +134,51 @@ Last run: 297,129 inputs, 0 disagreements, 1,838 to 6,026 positives per rule.
 
 ## 7. CRS regression suite
 
-The release gate. The Core Rule Set ships 322 YAML regression files (about
-5,000 cases) driven by [`go-ftw`](https://github.com/coreruleset/go-ftw).
+The release gate, and the only number that decides whether Parapet is
+CRS-compatible.
 
-Required for a stable release:
+```bash
+pip install pyyaml
+python3 tools/ftw_to_json.py coreruleset-4.9.0/tests/regression/tests ftw.json
+cargo run -p parapet-conformance -- ftw coreruleset-4.9.0/rules ftw.json 91.0
+```
 
-- 100% of the suite for the enabled paranoia level, **in blocking mode**.
-  Detection-only conformance says nothing about whether the engine decides
-  correctly, so it is not sufficient.
-- No rule silently skipped. An unimplemented construct must fail compilation,
-  which means a conformance run cannot pass by ignoring rules it cannot parse.
+Current state: **3,509 of 3,853 stages pass (91.1%)**, 21 skipped
+(status-only assertions), 10 not converted (`encoded_request`, a raw-request
+form).
 
-Not yet wired up: needs the parser and phase engine first.
+The corpus is CRS's own, converted from YAML to JSON in Python so the crate
+needs no YAML dependency. It runs in process rather than through `go-ftw`
+against a live server: faster, deterministic, and it gives a rule id and a
+test label when something fails. The assertions are identical, `expect_ids`
+and `no_expect_ids`.
+
+Two things the harness must get right, both learned the hard way:
+
+**The paranoia level.** Stages run with the configuration CRS documents in
+`tests/regression/README.md`, injected verbatim as rule 900005 rather than
+hand-seeded, so the harness cannot drift from what the corpus assumes. Most of
+the corpus exercises rules tagged `paranoia-level/2` and above. Running at the
+default level scores 55.2%; running at the documented level scores 91.1%. The
+36-point difference was entirely harness configuration, and every one of those
+failures looked like an engine bug.
+
+**Implied request headers.** FTW completes a request the way a client would: a
+body implies `Content-Type: application/x-www-form-urlencoded` and a
+`Content-Length` unless the test sets them. Without that the urlencoded parser
+never runs, `ARGS_POST` stays empty, and most of the 2,416 body-carrying
+stages fail for a reason that has nothing to do with rules.
+
+**Detection-only, deliberately.** The assertions are about which rules appear
+in the log, so a disruptive action that ended the transaction early would hide
+later rules and turn a correct engine into a failing one. This means the suite
+does not yet verify blocking *decisions*, only rule firing. A future blocking
+run is a separate, stricter gate, and the distinction matters: detection-only
+conformance says nothing about whether the WAF decides correctly.
+
+### The gate is a ratchet
+
+The suite is not at 100%, so CI enforces a floor rather than perfection. Raise
+`FTW_BASELINE` when the rate improves; never lower it. A pass/fail gate at
+100% would have to be disabled to be useful, and a gate that is disabled is
+not a gate.
