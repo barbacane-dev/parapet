@@ -99,13 +99,20 @@ collections, and `MATCHED_VARS` semantics.
 
 ## License
 
-Dual-licensed under either of
+Licensed under **either**
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)), **or**
 - MIT license ([LICENSE-MIT](LICENSE-MIT))
 
-at your option. Contributions are accepted under the same terms, under a DCO
-sign-off. See [CONTRIBUTING.md](CONTRIBUTING.md).
+at your option. You choose one and comply with that one; you do not need to
+satisfy both. This is the Rust ecosystem default, and it is broader than either
+license alone: the MIT branch is GPL-compatible at every GPL version, while the
+Apache branch carries an express patent grant that some legal reviews require.
+Apache-2.0 alone would exclude GPLv2-only consumers; MIT alone would drop the
+patent grant.
+
+Contributions are accepted under the same terms, under a DCO sign-off and with
+no CLA. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Permissive on purpose: an engine is only worth extracting if anyone can embed
 it, including proxies that compete with each other.
