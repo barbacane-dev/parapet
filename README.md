@@ -80,8 +80,11 @@ means no ReDoS surface from operator-supplied rules.
 
 ## Cost per request
 
-Measured with the full Core Rule Set at paranoia level 1, 591 rules, on an
-M-series laptop (`crates/parapet-conformance/tools/bench_inspect.rs`):
+Two numbers, and the difference between them matters.
+
+**In isolation**, with the full Core Rule Set at paranoia level 1, 591 rules,
+on an M-series laptop (`crates/parapet-conformance/tools/bench_inspect.rs`),
+after a 200-iteration warm-up:
 
 | Request | p50 | p99 |
 |---|---|---|
@@ -91,6 +94,16 @@ M-series laptop (`crates/parapet-conformance/tools/bench_inspect.rs`):
 | POST, small form body | 382 µs | 416 µs |
 | POST, 4 KB JSON body | 734 µs | 785 µs |
 | GET, SQLi (blocks) | 346 µs | 384 µs |
+
+**Inside a real gateway**, the same rule set on the same machine measured
+**1.9 ms mean** over 2,000 live requests, with 97% under 2.5 ms. That is 5 to 6
+times the isolated figure, and the live number is the one to plan with. A tight
+loop keeps the rule set hot in cache and the branch predictors trained; a
+server interleaving HTTP work does not. Treat the table above as a floor rather
+than as the cost.
+
+At roughly 2 ms, one core sustains on the order of 500 requests per second of
+inspection. That is capacity planning, not a footnote.
 
 This is what running a full rule set costs, not overhead that can be tuned
 away: it is 591 rules, each applying its transformations and evaluating its
