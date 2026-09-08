@@ -137,10 +137,16 @@ Eighteen operators, not the 35+ SecLang defines: `@rx`, `@lt`, `@eq`, `@ge`,
 `@detectSQLi`, `@unconditionalMatch`, `@validateUtf8Encoding`.
 
 Sixteen compile and evaluate today. `@detectSQLi` and `@detectXSS` parse but
-**refuse to compile**, because they need a libinjection classifier that is not
-integrated yet and compiling them to something that never matches would turn
-four CRS rules into silent bypasses. CI asserts that the refusal set is exactly
-those two, so a newly refused operator fails the build.
+**refuse to compile**, because they need a libinjection classifier and
+compiling them to something that never matches would turn four CRS rules into
+silent bypasses. CI asserts that the refusal set is exactly those two, so a
+newly refused operator fails the build.
+
+The only pure-Rust candidate, `libinjectionrs`, has been audited against the C
+original over 162,957 inputs: 21 false negatives in two identified bug classes,
+zero false positives, zero panics in 931,672 calls. See
+[docs/audit-libinjectionrs.md](docs/audit-libinjectionrs.md) for the findings,
+the verdict and how to reproduce it.
 
 Known hard parts, called out rather than discovered later: multipart parsing
 edge cases, `XML` selection (175 target references in CRS), persistent
