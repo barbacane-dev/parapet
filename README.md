@@ -78,6 +78,33 @@ inputs with **0 disagreements**.
 Consequence: CRS needs no PCRE, and the `regex` crate's linear-time guarantee
 means no ReDoS surface from operator-supplied rules.
 
+## Cost per request
+
+Measured with the full Core Rule Set at paranoia level 1, 591 rules, on an
+M-series laptop (`crates/parapet-conformance/tools/bench_inspect.rs`):
+
+| Request | p50 | p99 |
+|---|---|---|
+| GET, no query string | 311 µs | 341 µs |
+| GET, one short parameter | 344 µs | 381 µs |
+| GET, ten parameters | 591 µs | 631 µs |
+| POST, small form body | 382 µs | 416 µs |
+| POST, 4 KB JSON body | 734 µs | 785 µs |
+| GET, SQLi (blocks) | 346 µs | 384 µs |
+
+This is what running a full rule set costs, not overhead that can be tuned
+away: it is 591 rules, each applying its transformations and evaluating its
+operator against every target the rule names. Cost scales with the number of
+inspected values, which is why ten parameters costs roughly twice what one
+does.
+
+Two things follow. Inspection dominates any per-request budget it shares, so
+it belongs behind a decision about which routes need it rather than switched on
+globally by reflex. And the effective lever is the size of the rule set: a
+lower paranoia level, or scoping rules to the operations that can actually be
+attacked in that way, changes this number far more than micro-optimisation
+does. An earlier attempt to remove the per-rule value copies bought 7%.
+
 ## Sealing a rule set into a host artifact
 
 The `serde` feature serialises a parsed rule set, so a host can validate it at

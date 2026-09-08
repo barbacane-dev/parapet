@@ -11,12 +11,28 @@ use crate::macros::MacroContext;
 use crate::rule::{Collection, Selector, Target};
 
 /// One resolved member of a collection.
+///
+/// Borrows its bytes from the transaction's variables. Every rule resolves its
+/// targets, so with 591 CRS rules and a handful of arguments a cloning
+/// resolver copies tens of thousands of small buffers per request, which
+/// measured as the dominant cost of inspection. Only the value that actually
+/// matches is copied, once, by the caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Value {
+pub struct Value<'a> {
     /// The fully qualified name, such as `ARGS:id`, as `MATCHED_VAR_NAME`
-    /// reports it.
+    /// reports it. Built for qualified members, borrowed for scalars.
+    pub name: Cow<'a, str>,
+    /// The member's value. Borrowed for stored variables, owned only for
+    /// computed ones such as `&ARGS` counts and `*_COMBINED_SIZE`.
+    pub value: Cow<'a, [u8]>,
+}
+
+/// A resolved value with its bytes owned, for the one value a rule matched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedValue {
+    /// The fully qualified name.
     pub name: String,
-    /// The member's value.
+    /// The member's value, after transformations.
     pub value: Vec<u8>,
 }
 
@@ -177,8 +193,8 @@ impl Variables {
     ///
     /// Exclusions (`!ARGS:x`) are applied after collection, so order within
     /// the target list does not matter, matching SecLang.
-    pub fn resolve(&self, targets: &[Target]) -> Vec<Value> {
-        let mut out: Vec<Value> = Vec::new();
+    pub fn resolve(&self, targets: &[Target]) -> Vec<Value<'_>> {
+        let mut out: Vec<Value<'_>> = Vec::new();
         let mut excluded: Vec<(Collection, Option<&Selector>)> = Vec::new();
 
         for target in targets {
@@ -222,16 +238,18 @@ impl Variables {
         out
     }
 
-    fn resolve_one(&self, target: &Target, out: &mut Vec<Value>) {
+    fn resolve_one<'a>(&'a self, target: &Target, out: &mut Vec<Value<'a>>) {
         use Collection::*;
         let prefix = collection_name(target.collection);
 
         // `&COLLECTION` inspects the member count, not the values.
         if target.count {
             let count = self.count_of(target);
+            // A count is computed, so it has nowhere to borrow from. It is one
+            // small allocation per count target, not per value.
             out.push(Value {
-                name: prefix.to_string(),
-                value: count.to_string().into_bytes(),
+                name: Cow::Borrowed(prefix),
+                value: Cow::Owned(count.to_string().into_bytes()),
             });
             return;
         }
@@ -263,34 +281,28 @@ impl Variables {
             FilesNames => push_names(out, prefix, [&self.files]),
             MatchedVars => push_map(out, prefix, &self.matched_vars, target.selector.as_ref()),
 
-            ArgsCombinedSize => push_scalar(
+            ArgsCombinedSize => push_computed(
                 out,
                 prefix,
-                (self.args_get.combined_size() + self.args_post.combined_size())
-                    .to_string()
-                    .into_bytes(),
+                self.args_get.combined_size() + self.args_post.combined_size(),
             ),
-            FilesCombinedSize => push_scalar(
-                out,
-                prefix,
-                self.files.combined_size().to_string().into_bytes(),
-            ),
+            FilesCombinedSize => push_computed(out, prefix, self.files_content_size),
 
-            RequestMethod => push_scalar(out, prefix, self.request_method.clone()),
-            RequestUri => push_scalar(out, prefix, self.request_uri.clone()),
-            RequestUriRaw => push_scalar(out, prefix, self.request_uri_raw.clone()),
-            RequestLine => push_scalar(out, prefix, self.request_line.clone()),
-            RequestProtocol => push_scalar(out, prefix, self.request_protocol.clone()),
-            RequestFilename => push_scalar(out, prefix, self.request_filename.clone()),
-            RequestBasename => push_scalar(out, prefix, self.request_basename.clone()),
-            QueryString => push_scalar(out, prefix, self.query_string.clone()),
-            RequestBody => push_scalar(out, prefix, self.request_body.clone()),
-            ResponseBody => push_scalar(out, prefix, self.response_body.clone()),
-            ResponseStatus => push_scalar(out, prefix, self.response_status.clone()),
-            RemoteAddr => push_scalar(out, prefix, self.remote_addr.clone()),
-            UniqueId => push_scalar(out, prefix, self.unique_id.clone()),
-            ReqbodyProcessor => push_scalar(out, prefix, self.reqbody_processor.clone()),
-            MatchedVar => push_scalar(out, prefix, self.matched_var.clone()),
+            RequestMethod => push_scalar(out, prefix, &self.request_method),
+            RequestUri => push_scalar(out, prefix, &self.request_uri),
+            RequestUriRaw => push_scalar(out, prefix, &self.request_uri_raw),
+            RequestLine => push_scalar(out, prefix, &self.request_line),
+            RequestProtocol => push_scalar(out, prefix, &self.request_protocol),
+            RequestFilename => push_scalar(out, prefix, &self.request_filename),
+            RequestBasename => push_scalar(out, prefix, &self.request_basename),
+            QueryString => push_scalar(out, prefix, &self.query_string),
+            RequestBody => push_scalar(out, prefix, &self.request_body),
+            ResponseBody => push_scalar(out, prefix, &self.response_body),
+            ResponseStatus => push_scalar(out, prefix, &self.response_status),
+            RemoteAddr => push_scalar(out, prefix, &self.remote_addr),
+            UniqueId => push_scalar(out, prefix, &self.unique_id),
+            ReqbodyProcessor => push_scalar(out, prefix, &self.reqbody_processor),
+            MatchedVar => push_scalar(out, prefix, &self.matched_var),
 
             // CRS addresses XML with exactly two XPath expressions. Anything
             // else is refused at compile time, so reaching here with another
@@ -389,14 +401,28 @@ impl MacroContext for Variables {
     }
 }
 
-fn push_scalar(out: &mut Vec<Value>, name: &str, value: Vec<u8>) {
+/// A value the engine computes rather than stores, so it must be owned. One
+/// small allocation per count or size target, not per inspected value.
+fn push_computed<'a>(out: &mut Vec<Value<'a>>, name: &'a str, value: usize) {
     out.push(Value {
-        name: name.to_string(),
-        value,
+        name: Cow::Borrowed(name),
+        value: Cow::Owned(value.to_string().into_bytes()),
     });
 }
 
-fn push_map(out: &mut Vec<Value>, prefix: &str, map: &Multimap, selector: Option<&Selector>) {
+fn push_scalar<'a>(out: &mut Vec<Value<'a>>, name: &'a str, value: &'a [u8]) {
+    out.push(Value {
+        name: Cow::Borrowed(name),
+        value: Cow::Borrowed(value),
+    });
+}
+
+fn push_map<'a>(
+    out: &mut Vec<Value<'a>>,
+    prefix: &'a str,
+    map: &'a Multimap,
+    selector: Option<&Selector>,
+) {
     for (name, value) in map.iter() {
         let keep = match selector {
             None => true,
@@ -408,20 +434,26 @@ fn push_map(out: &mut Vec<Value>, prefix: &str, map: &Multimap, selector: Option
         };
         if keep {
             out.push(Value {
-                name: format!("{prefix}:{name}"),
-                value: value.to_vec(),
+                name: Cow::Owned(format!("{prefix}:{name}")),
+                value: Cow::Borrowed(value),
             });
         }
     }
 }
 
 /// `*_NAMES` collections inspect the member names as values.
-fn push_names<const N: usize>(out: &mut Vec<Value>, prefix: &str, maps: [&Multimap; N]) {
+fn push_names<'a, const N: usize>(
+    out: &mut Vec<Value<'a>>,
+    prefix: &'a str,
+    maps: [&'a Multimap; N],
+) {
     for map in maps {
         for (name, _) in map.iter() {
             out.push(Value {
-                name: format!("{prefix}:{name}"),
-                value: name.as_bytes().to_vec(),
+                name: Cow::Owned(format!("{prefix}:{name}")),
+                // A *_NAMES collection inspects the name as the value, and the
+                // name is already stored, so this borrows too.
+                value: Cow::Borrowed(name.as_bytes()),
             });
         }
     }

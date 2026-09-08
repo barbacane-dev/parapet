@@ -5,7 +5,7 @@
 //! first disruptive action, as SecLang specifies.
 
 use crate::action::{Ctl, RuleEngineMode, SetVarOp, Transformation};
-use crate::collections::{BodyError, Value, Variables};
+use crate::collections::{BodyError, OwnedValue, Variables};
 use crate::engine::{ChainLink, CompiledRule, Disruptive, RuleSet, SetVarSpec};
 use crate::matcher::CompiledOperator;
 use crate::rule::Target;
@@ -523,7 +523,7 @@ impl<'r> Transaction<'r> {
     ///
     /// Returns the first value that satisfied the operator, which is what
     /// `MATCHED_VAR` reports.
-    fn evaluate_step(&mut self, step: Step<'_>) -> Option<Value> {
+    fn evaluate_step(&mut self, step: Step<'_>) -> Option<OwnedValue> {
         let Step {
             targets,
             operator,
@@ -538,14 +538,14 @@ impl<'r> Transaction<'r> {
             values.retain(|v| !excluded.iter().any(|ex| v.name.eq_ignore_ascii_case(ex)));
         }
         let mut captures: Option<Vec<Vec<u8>>> = None;
-        let mut hit: Option<Value> = None;
+        let mut hit: Option<OwnedValue> = None;
 
         for value in values {
             // `multiMatch` tests after every transformation, not only the last,
             // so a payload that is detectable at an intermediate decoding
             // stage is still caught.
             let mut candidates: Vec<Vec<u8>> = Vec::new();
-            let mut current = value.value.clone();
+            let mut current = value.value.to_vec();
             if multi_match {
                 candidates.push(current.clone());
             }
@@ -565,8 +565,8 @@ impl<'r> Transaction<'r> {
                     if capture && !result.captures.is_empty() {
                         captures = Some(result.captures);
                     }
-                    hit = Some(Value {
-                        name: value.name.clone(),
+                    hit = Some(OwnedValue {
+                        name: value.name.to_string(),
                         value: candidate,
                     });
                     break;
