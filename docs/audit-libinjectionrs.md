@@ -3,9 +3,16 @@
 **Date:** 2026-09-08
 **Version audited:** 0.1.1 (crates.io), repository at `saarw/libinjectionrs@597f581`
 **Question:** can Parapet depend on this for `@detectSQLi` and `@detectXSS`?
-**Answer:** not as-is, but the failure mode is narrower and less dangerous than
-the maturity signals suggest, and adopting it with documented gaps is safer
-than the status quo. See [Verdict](#verdict).
+**Answer:** no. Not until the known classes are fixed and differential fuzzing
+runs clean for a sustained period. See [Verdict](#verdict), which revises an
+earlier and more permissive conclusion in light of what fuzzing found.
+
+**Revision, 2026-09-08:** the first pass of this audit concluded that adopting
+with documented gaps was safer than refusing the operator, on the grounds that
+the divergences were all false negatives in two bounded classes with no false
+positives anywhere. Differential fuzzing falsified both halves of that. The
+surface is not bounded, and it includes at least one false positive. The
+recommendation changed accordingly.
 
 ## Why this needs an audit at all
 
@@ -79,15 +86,23 @@ libinjection's own attack vectors and false-positive set (`libinjection-c/data/*
 
 | Check | Inputs | Result |
 |---|---|---|
-| SQLi verdicts vs C | 162,957 | **7 divergences, all false negatives** |
-| SQLi fingerprints, where both flagged | 16,725 | **0 divergences** |
-| XSS verdicts vs C | 162,957 | **14 divergences, all false negatives** |
+| SQLi verdicts vs C | 162,957 | 7 divergences, all false negatives |
+| SQLi verdicts, full corpus incl. NUL lines | 162,963 | 10 divergences, all false negatives |
+| **SQLi fingerprints vs C** | 162,963 | **1,631 divergences (~1%)** |
+| XSS verdicts vs C | 162,957 | 14 divergences, all false negatives |
 | SQLi verdicts, inputs ≥1000 bytes | 1,200 | 0 divergences |
 | Panic sweep, both entry points | 465,836 (931,672 calls) | **0 panics** |
+| Differential fuzzing, NUL blind spot removed | ~2 min | **new class found; another on the next run** |
 
-Zero false positives anywhere. Zero panics, including all 65,536 one- and
-two-byte inputs, NUL-containing inputs, and 50,000-byte pathological repeats.
-The residual panic risk its README names did not materialise.
+Zero panics, including all 65,536 one- and two-byte inputs, NUL-containing
+inputs, and 50,000-byte pathological repeats. The residual panic risk its
+README names did not materialise, and that finding stands.
+
+**The fingerprint number is the one that matters.** 1,631 inputs, about 1% of
+the corpus, tokenize differently. Only 10 of those flip a verdict, which means
+the verdict surviving a tokenization difference is luck rather than
+correctness. The false-negative surface is therefore not "7 inputs", it is
+"7 inputs *in this corpus*".
 
 ### The 7 SQLi misses are one bug class
 
@@ -136,37 +151,81 @@ Whitespace or a control byte between an attribute name and its `=`:
 This is a standard attribute-separator evasion, and catching it is much of the
 point of `detectXSS`.
 
+### A third class, found by fuzzing in two minutes
+
+The upstream differential fuzz target skipped every input containing a NUL,
+because it converted through `CString`; the C harness takes an explicit length,
+so this was never necessary. Removing the skip found a new class almost
+immediately:
+
+```
+'$T        C fp=snn   Rust fp=snn    agree without the NUL
+'$\0T      C fp=s1n   Rust fp=snn    C emits a number token, Rust a bareword
+T'$\0T#    C=injection  Rust=clean   so the verdict flips
+```
+
+A NUL inside a `$`-prefixed token changes tokenization in C but not in the
+port.
+
+### A fourth class, and a false positive
+
+The next fuzz run produced `'/@@\0...` at 8 bytes: **flagged by the port and
+not by C**. That is a false positive, and it falsifies the "zero false
+positives" result above, which held only over the text corpus.
+
+Two consequences. First, the divergence surface is not enumerable by
+inspection: with the blind spot removed, fuzzing finds a new class every few
+minutes. Second, the risk profile is not one-directional. A WAF that blocks
+legitimate traffic gets switched off entirely, which is worse for security than
+one missing rule.
+
 ## Verdict
 
-21 false negatives in 162,957 inputs, zero false positives, zero panics, two
-identified bug classes, no CI, one year stale.
+**Do not adopt yet.** Not because the port is careless, it is not: the
+fingerprints agree wherever both engines flag an injection, the panic
+discipline is real and enforced, and the supply chain is two crates. The
+problem is that nobody knows how large the divergence surface is, including
+now, after this audit.
 
-Not adoptable as-is. But the decisive comparison is not against a perfect
-library, it is against **the status quo, which is refusing the operator
-entirely**. A `@detectSQLi` that misses `INTO OUTFILE` still catches the
-thousands of vectors it agrees with C on; an operator that refuses to compile
-catches nothing and removes 4 CRS rules from the rule set. On that comparison,
-adopting with documented gaps is the safer position, provided the gaps are
-known rather than inherited blindly.
+The earlier version of this document argued the other way, and the argument is
+worth stating because it was wrong for an instructive reason. It ran: the
+alternative to adopting is refusing the operator, which runs no rule at all; a
+detector that misses `INTO OUTFILE` but agrees with C on thousands of other
+vectors is strictly better than one that never fires; therefore adopt with the
+gaps written down. That holds only if the gaps are **bounded** and
+**one-directional**. Fuzzing showed they are neither: new classes appear every
+few minutes, and at least one of them makes the port flag traffic the C
+library considers clean.
 
-Recommended order:
+A differential gate in Parapet's CI can catch a regression on inputs someone
+has already thought of. It cannot bound a surface that is still being
+discovered. Adopting behind such a gate would buy the feeling of a control
+without the control.
 
-1. **Fix the two bug classes.** Both are narrow and localised: multi-word
-   keyword folding in `sqli/tokenizer.rs`, attribute-separator handling in
-   `xss/html5.rs`. The corpus and harness in this audit verify a fix in
-   seconds. Contribute upstream; fork only if that stalls.
-2. **Adopt behind a differential gate in Parapet's CI**, the same shape as the
-   existing transformation differential: the C library as reference, this
-   corpus, and a divergence allowlist with a written reason per entry, so a new
-   divergence fails the build. Without that gate, Parapet inherits a
-   dependency nobody is testing.
-3. **Do not adopt without the gate.** The crate has no CI of its own, so
-   Parapet's would be the only thing standing between a future release and a
-   silent bypass.
+So the order is:
 
-If neither 1 nor 2 is worth the effort, keeping the refusal is defensible: it
-costs 30 regression stages and 0.8 points, and it fails loudly rather than
-quietly.
+1. **Fix the three characterised classes**: multi-word keyword folding in
+   `sqli/tokenizer.rs`, attribute-separator handling in `xss/html5.rs`, NUL
+   handling in the `$`-token scan. The harness in
+   [PR #1](https://github.com/saarw/libinjectionrs/pull/1) verifies a fix in
+   under a second.
+2. **Run differential fuzzing until it stops finding classes**, not for an
+   hour. That number, hours-clean rather than minutes-to-first-failure, is what
+   would make the surface look bounded.
+3. **Then adopt behind the differential gate**, which at that point guards
+   something real.
+
+Until then, keeping `@detectSQLi` and `@detectXSS` refused is the right call.
+It costs 30 regression stages and about 0.8 points on the CRS suite, and it
+fails loudly: the operator refuses to compile and CI asserts the refusal set,
+so nobody can deploy Parapet believing those four rules are running when they
+are not.
+
+The work in step 1 is contributed upstream rather than forked and diverged:
+[saarw/libinjectionrs#1](https://github.com/saarw/libinjectionrs/pull/1) adds
+the differential test, CI, and the fixes to the three pieces of tooling that
+were hiding this evidence. Fork:
+[barbacane-dev/libinjectionrs](https://github.com/barbacane-dev/libinjectionrs).
 
 ## Reproducing this
 
@@ -186,3 +245,10 @@ python3 <parapet>/crates/parapet-conformance/tools/audit/analyse.py sqli.json xs
 The panic sweep is `tools/audit/panic_sweep.rs`, a standalone binary against
 the published crate; it is deliberately not a workspace member, so it does not
 put `libinjectionrs` in Parapet's dependency graph before the decision is made.
+
+The differential fuzzing that found classes three and four now lives upstream
+in the PR:
+
+```bash
+cargo fuzz run fuzz_differential_sqli -- -max_total_time=120
+```

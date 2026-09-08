@@ -143,10 +143,14 @@ silent bypasses. CI asserts that the refusal set is exactly those two, so a
 newly refused operator fails the build.
 
 The only pure-Rust candidate, `libinjectionrs`, has been audited against the C
-original over 162,957 inputs: 21 false negatives in two identified bug classes,
-zero false positives, zero panics in 931,672 calls. See
-[docs/audit-libinjectionrs.md](docs/audit-libinjectionrs.md) for the findings,
-the verdict and how to reproduce it.
+original: 1,631 of 162,963 inputs tokenize differently, four divergence classes
+are characterised, and differential fuzzing finds a new one every few minutes
+once its NUL blind spot is removed. The verdict is **do not adopt yet**, and
+the refusal stays. See
+[docs/audit-libinjectionrs.md](docs/audit-libinjectionrs.md) for the findings
+and how to reproduce them; the fixes and the missing test infrastructure are
+contributed upstream in
+[saarw/libinjectionrs#1](https://github.com/saarw/libinjectionrs/pull/1).
 
 Known hard parts, called out rather than discovered later: multipart parsing
 edge cases, `XML` selection (175 target references in CRS), persistent
