@@ -90,6 +90,7 @@ dependencies = [
  "aho-corasick",
  "quick-xml",
  "regex",
+ "serde",
  "serde_json",
  "sha1",
  "thiserror",

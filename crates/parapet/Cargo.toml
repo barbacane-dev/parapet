@@ -15,9 +15,16 @@ authors.workspace = true
 aho-corasick.workspace = true
 quick-xml.workspace = true
 regex.workspace = true
+serde = { workspace = true, optional = true }
 serde_json.workspace = true
 sha1.workspace = true
 thiserror.workspace = true
+
+[features]
+default = []
+# Serialise a parsed rule set, so a host can validate at build time and seal
+# the result into its own artifact rather than re-parsing at startup.
+serde = ["dep:serde"]
 
 [lints]
 workspace = true

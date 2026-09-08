@@ -78,6 +78,29 @@ inputs with **0 disagreements**.
 Consequence: CRS needs no PCRE, and the `regex` crate's linear-time guarantee
 means no ReDoS surface from operator-supplied rules.
 
+## Sealing a rule set into a host artifact
+
+The `serde` feature serialises a parsed rule set, so a host can validate it at
+build time, store the result, and rebuild the automata once at startup rather
+than re-parsing on every boot. This is what makes an unknown directive a build
+failure rather than a runtime surprise.
+
+```toml
+parapet = { version = "0.0", features = ["serde"] }
+```
+
+Measured on CRS v4.9.0 (`cargo run -p parapet-conformance -- seal <rules>`):
+
+| | |
+|---|---|
+| Source `.conf` | 599 KiB |
+| Serialised rule set | 600 KiB (1.03x source) |
+| Rebuild from sealed form | 316 ms, once per process |
+
+The rebuild cost is regex programs plus the Aho-Corasick automata for the 23
+`@pmFromFile` operators. It is paid per process, not per request, but it is not
+free: a host that hot-reloads rule sets pays it on every reload.
+
 ## Scope
 
 SecLang defines far more than the Core Rule Set uses. Parapet targets what CRS

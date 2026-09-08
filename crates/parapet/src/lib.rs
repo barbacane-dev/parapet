@@ -70,6 +70,7 @@ pub enum Verdict {
     },
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// The SecLang evaluation phases.
 ///
 /// CRS v4.9.0 distributes its rules across all five: 170 rules in

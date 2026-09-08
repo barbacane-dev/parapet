@@ -23,6 +23,10 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The serde feature is how a host seals a validated rule set into its
+      # own artifact, so it is part of the public surface and gets checked.
+      - run: cargo clippy -p parapet --features serde --all-targets -- -D warnings
+      - run: cargo test -p parapet --features serde
 
   conformance-compile:
     name: CRS @rx compile coverage

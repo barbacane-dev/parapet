@@ -10,7 +10,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-parapet = { path = "../parapet" }
+parapet = { path = "../parapet", features = ["serde"] }
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

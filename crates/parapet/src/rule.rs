@@ -7,6 +7,7 @@
 use crate::action::Action;
 use crate::operator::Operator;
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// One SecLang directive.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Directive {
@@ -31,6 +32,7 @@ pub enum Directive {
     },
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// A rule: what to inspect, what to test, what to do about it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rule {
@@ -62,6 +64,7 @@ impl Rule {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// A variable to inspect, such as `ARGS`, `ARGS:id` or `!REQUEST_COOKIES:/^__/`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
@@ -75,6 +78,7 @@ pub struct Target {
     pub count: bool,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// How a target narrows a collection.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Selector {
@@ -87,6 +91,7 @@ pub enum Selector {
     XPath(String),
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// The collections CRS addresses.
 ///
 /// SecLang defines more. An unlisted collection fails parsing rather than
@@ -170,6 +175,7 @@ impl Collection {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Rule severity, as SecLang defines it (syslog levels 0 through 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[allow(missing_docs)]

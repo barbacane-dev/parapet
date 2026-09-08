@@ -8,6 +8,7 @@
 use crate::rule::Severity;
 use crate::Phase;
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// A single action from a rule's action list.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(missing_docs)]
@@ -63,6 +64,7 @@ pub enum Action {
     Ctl(Ctl),
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// A `setvar:` assignment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetVar {
@@ -75,6 +77,7 @@ pub struct SetVar {
     pub value: Option<String>,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// How a `setvar:` combines with the existing value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetVarOp {
@@ -88,6 +91,7 @@ pub enum SetVarOp {
     Delete,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// The `ctl:` directives CRS uses.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(missing_docs)]
@@ -109,6 +113,7 @@ pub enum Ctl {
     },
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// What `ctl:ruleEngine` switches the engine to for the rest of the
 /// transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +124,7 @@ pub enum RuleEngineMode {
     DetectionOnly,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// The transformations CRS applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(missing_docs)]

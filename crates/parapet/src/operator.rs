@@ -4,6 +4,7 @@
 //! a named error rather than being treated as always-false, because an
 //! operator nobody evaluates is a rule that cannot fire.
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// An operand that is either a literal number or a macro to expand at
 /// evaluation time, such as `@lt %{tx.anomaly_score}`.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +27,7 @@ impl Numeric {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// A SecLang operator, with its operand.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operator {

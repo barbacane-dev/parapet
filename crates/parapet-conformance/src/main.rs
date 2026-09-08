@@ -54,6 +54,10 @@ fn main() -> ExitCode {
             },
             _ => usage(),
         },
+        Some("seal") => match args.get(2) {
+            Some(dir) => seal_report(dir),
+            None => usage(),
+        },
         Some("run") => match args.get(2) {
             Some(dir) => match run::run(dir) {
                 Ok(0) => ExitCode::SUCCESS,
@@ -84,12 +88,101 @@ fn usage() -> ExitCode {
     eprintln!("       parapet-conformance operators <crs-rules-dir>");
     eprintln!("       parapet-conformance run <crs-rules-dir>");
     eprintln!("       parapet-conformance ftw <crs-rules-dir> <corpus.json> [min-pass-rate]");
+    eprintln!("       parapet-conformance seal <crs-rules-dir>");
     ExitCode::FAILURE
 }
 
 /// Parse every `.conf` in a CRS rules directory. Any failure is a defect: CRS
 /// is the compatibility bar, so a rule Parapet cannot parse is a rule it would
 /// have silently failed to enforce.
+/// Measure what sealing a validated rule set into a host artifact costs.
+///
+/// A host validates the rule set at build time and stores the parsed form,
+/// then rebuilds the automata once at startup. Both numbers matter to that
+/// design: the serialised size lands in the artifact, and the rebuild time is
+/// paid per process rather than per request.
+fn seal_report(dir: &str) -> ExitCode {
+    use parapet::matcher::DirDataLoader;
+
+    let mut sources: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "conf"))
+            .collect(),
+        Err(e) => {
+            eprintln!("cannot read {dir}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    sources.sort();
+
+    let mut directives = Vec::new();
+    let mut source_bytes = 0usize;
+    for path in &sources {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let Ok(src) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        source_bytes += src.len();
+        let (parsed, errors) = parapet::parse_all(&src, &name);
+        if !errors.is_empty() {
+            eprintln!("{name}: {} parse errors", errors.len());
+            return ExitCode::FAILURE;
+        }
+        directives.extend(parsed);
+    }
+
+    let json = match serde_json::to_vec(&directives) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("cannot serialise: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Round-trip before reporting, so the number describes something usable.
+    let restored: Vec<parapet::Directive> = match serde_json::from_slice(&json) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("cannot deserialise: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if restored != directives {
+        eprintln!("round trip changed the rule set");
+        return ExitCode::FAILURE;
+    }
+
+    let loader = DirDataLoader::new(dir);
+    let start = std::time::Instant::now();
+    let (ruleset, errors) = parapet::RuleSet::compile_all(&restored, &loader);
+    let build = start.elapsed();
+
+    println!("source .conf bytes    : {source_bytes}");
+    println!("directives            : {}", directives.len());
+    println!(
+        "serialised (JSON)     : {} bytes ({:.1} KiB)",
+        json.len(),
+        json.len() as f64 / 1024.0
+    );
+    println!(
+        "  vs source           : {:.2}x",
+        json.len() as f64 / source_bytes as f64
+    );
+    println!("rules compiled        : {}", ruleset.rule_count());
+    println!("rules refused         : {}", errors.len());
+    println!(
+        "rebuild from sealed   : {:.1} ms (once per process, not per request)",
+        build.as_secs_f64() * 1000.0
+    );
+    ExitCode::SUCCESS
+}
+
 /// Compile every operator in a CRS rule set, including resolving the
 /// `@pmFromFile` data files. An operator that fails to compile is a rule that
 /// cannot be enforced, so the only acceptable failures are the ones Parapet
