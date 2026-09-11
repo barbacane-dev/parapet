@@ -8,7 +8,39 @@
 use std::borrow::Cow;
 
 use crate::macros::MacroContext;
-use crate::rule::{Collection, Selector, Target};
+use crate::rule::Collection;
+
+/// A target whose member-selector is compiled, ready to resolve without any
+/// per-request work.
+///
+/// The parsed [`crate::rule::Target`] keeps its selector as a string so the
+/// rule set stays serialisable; compilation turns it into this, where a regex
+/// selector is a compiled automaton rather than a pattern to rebuild on every
+/// resolution. A rule set with many regex selectors resolved thousands of
+/// values per request, and recompiling the selector for each one measured as
+/// the dominant cost of inspection.
+#[derive(Debug, Clone)]
+pub struct CompiledTarget {
+    /// The collection to read.
+    pub collection: Collection,
+    /// Which members to keep, if narrowed.
+    pub selector: Option<CompiledSelector>,
+    /// A leading `!`: remove these members from the result.
+    pub exclusion: bool,
+    /// A leading `&`: inspect the member count, not the values.
+    pub count: bool,
+}
+
+/// A member-selector, compiled.
+#[derive(Debug, Clone)]
+pub enum CompiledSelector {
+    /// `ARGS:username`, an exact member name.
+    Name(String),
+    /// `REQUEST_HEADERS:/^X-/`, compiled once.
+    Regex(regex::Regex),
+    /// `XML:/*`, an XPath expression, kept as authored.
+    XPath(String),
+}
 
 /// One resolved member of a collection.
 ///
@@ -193,9 +225,9 @@ impl Variables {
     ///
     /// Exclusions (`!ARGS:x`) are applied after collection, so order within
     /// the target list does not matter, matching SecLang.
-    pub fn resolve(&self, targets: &[Target]) -> Vec<Value<'_>> {
+    pub fn resolve(&self, targets: &[CompiledTarget]) -> Vec<Value<'_>> {
         let mut out: Vec<Value<'_>> = Vec::new();
-        let mut excluded: Vec<(Collection, Option<&Selector>)> = Vec::new();
+        let mut excluded: Vec<(Collection, Option<&CompiledSelector>)> = Vec::new();
 
         for target in targets {
             if target.exclusion {
@@ -214,23 +246,19 @@ impl Variables {
                     }
                     match selector {
                         None => true,
-                        Some(Selector::Name(n)) => value
+                        Some(CompiledSelector::Name(n)) => value
                             .name
                             .strip_prefix(prefix)
                             .and_then(|r| r.strip_prefix(':'))
                             .is_some_and(|member| member.eq_ignore_ascii_case(n)),
-                        Some(Selector::Regex(pattern)) => value
+                        Some(CompiledSelector::Regex(re)) => value
                             .name
                             .strip_prefix(prefix)
                             .and_then(|r| r.strip_prefix(':'))
-                            .is_some_and(|member| {
-                                regex::Regex::new(pattern)
-                                    .map(|re| re.is_match(member))
-                                    .unwrap_or(false)
-                            }),
+                            .is_some_and(|member| re.is_match(member)),
                         // An XPath exclusion cannot be evaluated without an
                         // XML tree, and XML is never populated yet.
-                        Some(Selector::XPath(_)) => false,
+                        Some(CompiledSelector::XPath(_)) => false,
                     }
                 })
             });
@@ -238,7 +266,7 @@ impl Variables {
         out
     }
 
-    fn resolve_one<'a>(&'a self, target: &Target, out: &mut Vec<Value<'a>>) {
+    fn resolve_one<'a>(&'a self, target: &CompiledTarget, out: &mut Vec<Value<'a>>) {
         use Collection::*;
         let prefix = collection_name(target.collection);
 
@@ -308,10 +336,10 @@ impl Variables {
             // else is refused at compile time, so reaching here with another
             // form is impossible rather than silently empty.
             Xml => match target.selector.as_ref() {
-                Some(Selector::XPath(expr)) if expr.trim() == "/*" => {
+                Some(CompiledSelector::XPath(expr)) if expr.trim() == "/*" => {
                     push_map(out, prefix, &self.xml_elements, None)
                 }
-                Some(Selector::XPath(expr)) if expr.trim() == "//@*" => {
+                Some(CompiledSelector::XPath(expr)) if expr.trim() == "//@*" => {
                     push_map(out, prefix, &self.xml_attributes, None)
                 }
                 _ => {}
@@ -331,10 +359,10 @@ impl Variables {
     /// that one header is present, not how many headers there are. Counting
     /// the whole collection instead makes every presence check true, which
     /// silently fires the rules that test for a header being absent.
-    fn count_of(&self, target: &Target) -> usize {
+    fn count_of(&self, target: &CompiledTarget) -> usize {
         let mut resolved = Vec::new();
         self.resolve_one(
-            &Target {
+            &CompiledTarget {
                 collection: target.collection,
                 selector: target.selector.clone(),
                 exclusion: false,
@@ -421,16 +449,14 @@ fn push_map<'a>(
     out: &mut Vec<Value<'a>>,
     prefix: &'a str,
     map: &'a Multimap,
-    selector: Option<&Selector>,
+    selector: Option<&CompiledSelector>,
 ) {
     for (name, value) in map.iter() {
         let keep = match selector {
             None => true,
-            Some(Selector::Name(want)) => name.eq_ignore_ascii_case(want),
-            Some(Selector::Regex(pattern)) => regex::Regex::new(pattern)
-                .map(|re| re.is_match(name))
-                .unwrap_or(false),
-            Some(Selector::XPath(_)) => false,
+            Some(CompiledSelector::Name(want)) => name.eq_ignore_ascii_case(want),
+            Some(CompiledSelector::Regex(re)) => re.is_match(name),
+            Some(CompiledSelector::XPath(_)) => false,
         };
         if keep {
             out.push(Value {
