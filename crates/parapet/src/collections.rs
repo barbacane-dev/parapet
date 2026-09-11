@@ -241,24 +241,33 @@ impl Variables {
             out.retain(|value| {
                 !excluded.iter().any(|(collection, selector)| {
                     let prefix = collection_name(*collection);
-                    if !value.name.starts_with(prefix) {
-                        return false;
-                    }
-                    match selector {
-                        None => true,
-                        Some(CompiledSelector::Name(n)) => value
-                            .name
-                            .strip_prefix(prefix)
-                            .and_then(|r| r.strip_prefix(':'))
-                            .is_some_and(|member| member.eq_ignore_ascii_case(n)),
-                        Some(CompiledSelector::Regex(re)) => value
-                            .name
-                            .strip_prefix(prefix)
-                            .and_then(|r| r.strip_prefix(':'))
-                            .is_some_and(|member| re.is_match(member)),
+                    // Match the collection exactly, not by string prefix: a
+                    // value is named `PREFIX` (a scalar) or `PREFIX:member` (a
+                    // map). A bare `starts_with(prefix)` would let `!ARGS` also
+                    // exclude `ARGS_GET:x` and `ARGS_NAMES:x`, since those names
+                    // begin with "ARGS".
+                    let member = match value.name.strip_prefix(prefix) {
+                        Some("") => None,
+                        Some(rest) => match rest.strip_prefix(':') {
+                            Some(member) => Some(member),
+                            // A longer collection name that merely starts with
+                            // `prefix`, such as ARGS_GET against ARGS.
+                            None => return false,
+                        },
+                        None => return false,
+                    };
+                    match (selector, member) {
+                        // Whole-collection exclusion: every member of it.
+                        (None, _) => true,
+                        // A selector cannot match a scalar, which has no member.
+                        (Some(_), None) => false,
+                        (Some(CompiledSelector::Name(n)), Some(member)) => {
+                            member.eq_ignore_ascii_case(n)
+                        }
+                        (Some(CompiledSelector::Regex(re)), Some(member)) => re.is_match(member),
                         // An XPath exclusion cannot be evaluated without an
                         // XML tree, and XML is never populated yet.
-                        Some(CompiledSelector::XPath(_)) => false,
+                        (Some(CompiledSelector::XPath(_)), _) => false,
                     }
                 })
             });
