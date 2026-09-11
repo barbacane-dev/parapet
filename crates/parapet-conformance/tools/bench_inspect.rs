@@ -9,8 +9,13 @@
 //! ```text
 //! cp crs/rules/*.conf crs/rules/*.data bench-rules/
 //! cp crs/crs-setup.conf.example bench-rules/000-crs-setup.conf
-//! cargo run --release --bin bench_inspect -- bench-rules
+//! cargo run --release -p parapet-conformance --example bench_inspect -- bench-rules
 //! ```
+// A standalone measurement tool: it reads a rules directory and panics on any
+// malformed input rather than handling it, which is what you want from a
+// benchmark harness.
+#![allow(clippy::unwrap_used)]
+
 use parapet::transaction::EngineMode;
 use parapet::{RuleSet, Transaction, Verdict};
 use std::time::Instant;
@@ -20,6 +25,10 @@ struct Case {
     method: &'static str,
     uri: &'static str,
     body: Option<(&'static str, &'static str)>,
+    /// A `Cookie` header value. CRS resolves REQUEST_COOKIES with a
+    /// `!REQUEST_COOKIES:/__utm/` exclusion on 162 rules, so cookie count is a
+    /// first-order cost and a realistic browser request carries several.
+    cookies: Option<&'static str>,
 }
 
 fn main() {
@@ -43,24 +52,108 @@ fn main() {
     let loader = parapet::DirDataLoader::new(&dir);
     let start = Instant::now();
     let (rules, errors) = RuleSet::compile_all(&directives, &loader);
-    println!("rules={} refused={} build={:.0}ms", rules.rule_count(), errors.len(), start.elapsed().as_secs_f64() * 1000.0);
+    println!(
+        "rules={} refused={} build={:.0}ms",
+        rules.rule_count(),
+        errors.len(),
+        start.elapsed().as_secs_f64() * 1000.0
+    );
+
+    // A typical browser cookie jar: session cookies plus the analytics cookies
+    // CRS explicitly excludes (__utm*, _pk_ref).
+    const BROWSER_COOKIES: &str = "sessionid=abc123def456; csrftoken=xyz789; __utma=1.2.3.4.5; __utmb=6.7.8.9; __utmc=10; __utmz=11.12.13.14.utmcsr=google; _pk_ref=%5B%22%22%2C%22%22%5D; theme=dark; lang=en";
+    // A heavier jar, to show how cost scales with cookie count.
+    let many = (0..24)
+        .map(|i| format!("c{i}=v{i}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let many_cookies: &'static str = Box::leak(many.into_boxed_str());
 
     let cases = [
-        Case { name: "benign GET, no query", method: "GET", uri: "/index.html", body: None },
-        Case { name: "benign GET, short query", method: "GET", uri: "/search?q=hello+world", body: None },
-        Case { name: "benign GET, 10 params", method: "GET", uri: "/s?a=1&b=2&c=3&d=4&e=5&f=6&g=7&h=8&i=9&j=10", body: None },
-        Case { name: "benign POST, form body", method: "POST", uri: "/login", body: Some(("application/x-www-form-urlencoded", "user=alice&pass=hunter2")) },
-        Case { name: "benign POST, 4KB JSON", method: "POST", uri: "/api", body: Some(("application/json", "")) },
-        Case { name: "attack, sqli (blocks)", method: "GET", uri: "/s?q=1%20UNION%20SELECT%20p%20FROM%20u", body: None },
-        Case { name: "attack, xss (blocks)", method: "GET", uri: "/s?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E", body: None },
+        Case {
+            name: "benign GET, no query",
+            method: "GET",
+            uri: "/index.html",
+            body: None,
+            cookies: None,
+        },
+        Case {
+            name: "benign GET, short query",
+            method: "GET",
+            uri: "/search?q=hello+world",
+            body: None,
+            cookies: None,
+        },
+        Case {
+            name: "benign GET, 10 params",
+            method: "GET",
+            uri: "/s?a=1&b=2&c=3&d=4&e=5&f=6&g=7&h=8&i=9&j=10",
+            body: None,
+            cookies: None,
+        },
+        Case {
+            name: "benign POST, form body",
+            method: "POST",
+            uri: "/login",
+            body: Some((
+                "application/x-www-form-urlencoded",
+                "user=alice&pass=hunter2",
+            )),
+            cookies: None,
+        },
+        Case {
+            name: "benign POST, 4KB JSON",
+            method: "POST",
+            uri: "/api",
+            body: Some(("application/json", "")),
+            cookies: None,
+        },
+        Case {
+            name: "benign GET, browser cookies",
+            method: "GET",
+            uri: "/index.html",
+            body: None,
+            cookies: Some(BROWSER_COOKIES),
+        },
+        Case {
+            name: "benign GET, 24 cookies",
+            method: "GET",
+            uri: "/index.html",
+            body: None,
+            cookies: Some(many_cookies),
+        },
+        Case {
+            name: "attack, sqli (blocks)",
+            method: "GET",
+            uri: "/s?q=1%20UNION%20SELECT%20p%20FROM%20u",
+            body: None,
+            cookies: None,
+        },
+        Case {
+            name: "attack, xss (blocks)",
+            method: "GET",
+            uri: "/s?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E",
+            body: None,
+            cookies: None,
+        },
     ];
 
     let big_json = format!("{{\"data\":\"{}\"}}", "x".repeat(4000));
 
-    println!("\n{:<28} {:>9} {:>9} {:>9} {:>9}  verdict", "case", "p50", "p90", "p99", "mean");
+    println!(
+        "\n{:<28} {:>9} {:>9} {:>9} {:>9}  verdict",
+        "case", "p50", "p90", "p99", "mean"
+    );
     for case in &cases {
         let body_owned: Option<(&str, String)> = case.body.map(|(ct, b)| {
-            (ct, if b.is_empty() { big_json.clone() } else { b.to_string() })
+            (
+                ct,
+                if b.is_empty() {
+                    big_json.clone()
+                } else {
+                    b.to_string()
+                },
+            )
         });
 
         // Warm up so the first-touch page faults do not land in the sample.
@@ -94,7 +187,11 @@ fn main() {
             pick(0.90) as f64 / 1000.0,
             pick(0.99) as f64 / 1000.0,
             mean / 1000.0,
-            if last == Verdict::Allow { "allow" } else { "block" }
+            if last == Verdict::Allow {
+                "allow"
+            } else {
+                "block"
+            }
         );
     }
 }
@@ -110,6 +207,9 @@ fn run_one(rules: &RuleSet, case: &Case, body: Option<&(&str, String)>) -> Verdi
     tx.add_request_header("Host", "example.test");
     tx.add_request_header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64)");
     tx.add_request_header("Accept", "text/html,application/xhtml+xml");
+    if let Some(cookies) = case.cookies {
+        tx.add_request_header("Cookie", cookies);
+    }
     if let Some((ct, _)) = body {
         tx.add_request_header("Content-Type", ct);
     }

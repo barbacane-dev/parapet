@@ -88,35 +88,33 @@ after a 200-iteration warm-up:
 
 | Request | p50 | p99 |
 |---|---|---|
-| GET, no query string | 311 µs | 341 µs |
-| GET, one short parameter | 344 µs | 381 µs |
-| GET, ten parameters | 591 µs | 631 µs |
-| POST, small form body | 382 µs | 416 µs |
-| POST, 4 KB JSON body | 734 µs | 785 µs |
-| GET, SQLi (blocks) | 346 µs | 384 µs |
+| GET, no query string | 52 µs | 64 µs |
+| GET, one short parameter | 78 µs | 184 µs |
+| GET, ten parameters | 268 µs | 296 µs |
+| POST, small form body | 111 µs | 145 µs |
+| POST, 4 KB JSON body | 463 µs | 539 µs |
+| GET, nine browser cookies | 277 µs | 311 µs |
+| GET, twenty-four cookies | 603 µs | 653 µs |
+| GET, SQLi (blocks) | 83 µs | 96 µs |
 
-**Inside a real gateway**, the same rule set on the same machine measured
-**1.9 ms mean** over 2,000 live requests, with 97% under 2.5 ms. That is 5 to 6
-times the isolated figure, and the live number is the one to plan with. A tight
-loop keeps the rule set hot in cache and the branch predictors trained; a
-server interleaving HTTP work does not. Treat the table above as a floor rather
-than as the cost.
+Cost scales with the number of values inspected, which is why ten parameters
+cost more than one. Cookies are a first-order cost of their own: CRS resolves
+`REQUEST_COOKIES` on 162 rules, each carrying a `!REQUEST_COOKIES:/__utm/`
+exclusion, so a request's cost rises with the size of its cookie jar.
 
-At roughly 2 ms, one core sustains on the order of 500 requests per second of
-inspection. That is capacity planning, not a footnote.
+A tight loop keeps the rule set hot in cache and the branch predictors trained;
+a server interleaving HTTP work does not, so a real gateway runs somewhat above
+these figures. Treat the table as a floor, and measure a deployment's own
+in-gateway cost before planning capacity against it.
 
 This is what running a full rule set costs, not overhead that can be tuned
-away: it is 591 rules, each applying its transformations and evaluating its
-operator against every target the rule names. Cost scales with the number of
-inspected values, which is why ten parameters costs roughly twice what one
-does.
-
-Two things follow. Inspection dominates any per-request budget it shares, so
-it belongs behind a decision about which routes need it rather than switched on
-globally by reflex. And the effective lever is the size of the rule set: a
-lower paranoia level, or scoping rules to the operations that can actually be
-attacked in that way, changes this number far more than micro-optimisation
-does. An earlier attempt to remove the per-rule value copies bought 7%.
+away: 591 rules, each applying its transformations and evaluating its operator
+against every target it names. The effective lever is the size of the rule set:
+a lower paranoia level, or scoping rules to the operations that can actually be
+attacked in a given way, changes this number far more than anything else. And
+because inspection dominates any per-request budget it shares, it belongs behind
+a decision about which routes need it rather than switched on globally by
+reflex.
 
 ## Sealing a rule set into a host artifact
 

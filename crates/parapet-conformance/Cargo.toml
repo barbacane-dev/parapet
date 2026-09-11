@@ -17,3 +17,11 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+# Standalone per-request cost benchmark. Run against a CRS rules directory that
+# includes crs-setup: see the file header. An example rather than a bin so the
+# package keeps a single default binary and `cargo run -p parapet-conformance`
+# stays unambiguous.
+[[example]]
+name = "bench_inspect"
+path = "tools/bench_inspect.rs"
