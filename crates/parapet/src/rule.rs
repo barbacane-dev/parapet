@@ -207,3 +207,91 @@ impl Severity {
         })
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::action::Action;
+
+    #[test]
+    fn severity_parses_names_and_numbers() {
+        for (s, sev) in [
+            ("EMERGENCY", Severity::Emergency),
+            ("0", Severity::Emergency),
+            ("alert", Severity::Alert),
+            ("2", Severity::Critical),
+            ("ERROR", Severity::Error),
+            ("warning", Severity::Warning),
+            ("5", Severity::Notice),
+            ("INFO", Severity::Info),
+            ("7", Severity::Debug),
+        ] {
+            assert_eq!(Severity::parse(s), Some(sev));
+        }
+        assert_eq!(Severity::parse("nope"), None);
+    }
+
+    #[test]
+    fn rule_id_finds_the_id_action_among_others() {
+        let with = Rule {
+            targets: Vec::new(),
+            operator: None,
+            negated: false,
+            actions: vec![Action::Phase(crate::Phase::RequestBody), Action::Id(5)],
+            line: 1,
+        };
+        assert_eq!(with.id(), Some(5));
+        let without = Rule {
+            targets: Vec::new(),
+            operator: None,
+            negated: false,
+            actions: vec![Action::Pass],
+            line: 1,
+        };
+        assert_eq!(without.id(), None);
+    }
+
+    #[test]
+    fn every_collection_name_round_trips() {
+        use Collection::*;
+        for c in [
+            Args,
+            ArgsCombinedSize,
+            ArgsGet,
+            ArgsGetNames,
+            ArgsNames,
+            Files,
+            FilesCombinedSize,
+            FilesNames,
+            MatchedVar,
+            MatchedVars,
+            MultipartPartHeaders,
+            QueryString,
+            ReqbodyProcessor,
+            RemoteAddr,
+            RequestBasename,
+            RequestBody,
+            RequestCookies,
+            RequestCookiesNames,
+            RequestFilename,
+            RequestHeaders,
+            RequestHeadersNames,
+            RequestLine,
+            RequestMethod,
+            RequestProtocol,
+            RequestUri,
+            RequestUriRaw,
+            ResponseBody,
+            ResponseHeaders,
+            ResponseStatus,
+            Tx,
+            UniqueId,
+            Xml,
+        ] {
+            let name = crate::collections::collection_name(c);
+            assert_eq!(Collection::parse(name), Some(c), "{name}");
+        }
+        assert_eq!(Collection::parse("NOT_A_COLLECTION"), None);
+    }
+}

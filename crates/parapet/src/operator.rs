@@ -287,4 +287,95 @@ mod tests {
     fn inverted_byte_range_is_rejected() {
         assert!(Operator::parse("@validateByteRange 90-65").is_err());
     }
+
+    #[test]
+    fn operators_needing_an_operand_reject_an_empty_one() {
+        assert!(Operator::parse("@pm").is_err());
+        assert!(Operator::parse("@pmFromFile").is_err());
+        assert!(Operator::parse("@ipMatch").is_err());
+        assert!(Operator::parse("@validateByteRange").is_err());
+    }
+
+    #[test]
+    fn byte_ranges_skip_empty_parts() {
+        assert_eq!(
+            Operator::parse("@validateByteRange 9,,10").unwrap(),
+            Operator::ValidateByteRange(vec![(9, 9), (10, 10)])
+        );
+        assert!(Operator::parse("@validateByteRange 9,notabyte").is_err());
+    }
+
+    #[test]
+    fn parses_the_remaining_operators() {
+        assert_eq!(
+            Operator::parse("@contains x").unwrap(),
+            Operator::Contains("x".into())
+        );
+        assert_eq!(
+            Operator::parse("@endsWith .php").unwrap(),
+            Operator::EndsWith(".php".into())
+        );
+        assert_eq!(
+            Operator::parse("@within GET POST").unwrap(),
+            Operator::Within("GET POST".into())
+        );
+        assert_eq!(
+            Operator::parse("@ipMatch 10.0.0.0/8").unwrap(),
+            Operator::IpMatch("10.0.0.0/8".into())
+        );
+        assert_eq!(
+            Operator::parse("@gt 5").unwrap(),
+            Operator::Gt(Numeric::Literal(5))
+        );
+        assert_eq!(
+            Operator::parse("@eq 5").unwrap(),
+            Operator::Eq(Numeric::Literal(5))
+        );
+        assert_eq!(
+            Operator::parse("@validateUtf8Encoding").unwrap(),
+            Operator::ValidateUtf8Encoding
+        );
+        assert_eq!(
+            Operator::parse("@validateUrlEncoding").unwrap(),
+            Operator::ValidateUrlEncoding
+        );
+        assert_eq!(
+            Operator::parse("@unconditionalMatch").unwrap(),
+            Operator::UnconditionalMatch
+        );
+    }
+
+    #[test]
+    fn every_operator_reports_its_name() {
+        let ops = [
+            Operator::Rx(String::new()),
+            Operator::Pm(vec![]),
+            Operator::PmFromFile(String::new()),
+            Operator::Streq(String::new()),
+            Operator::Contains(String::new()),
+            Operator::EndsWith(String::new()),
+            Operator::Within(String::new()),
+            Operator::IpMatch(String::new()),
+            Operator::Lt(Numeric::Literal(0)),
+            Operator::Gt(Numeric::Literal(0)),
+            Operator::Eq(Numeric::Literal(0)),
+            Operator::Ge(Numeric::Literal(0)),
+            Operator::DetectSqli,
+            Operator::DetectXss,
+            Operator::ValidateUtf8Encoding,
+            Operator::ValidateUrlEncoding,
+            Operator::ValidateByteRange(vec![]),
+            Operator::UnconditionalMatch,
+        ];
+        let names: Vec<&str> = ops.iter().map(Operator::name).collect();
+        assert_eq!(names.len(), 18);
+        assert!(names.contains(&"rx"));
+        assert!(names.contains(&"detectSQLi"));
+        assert!(names.contains(&"unconditionalMatch"));
+        // Every name is distinct.
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 18);
+    }
 }

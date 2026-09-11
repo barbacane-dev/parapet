@@ -28,6 +28,47 @@ jobs:
       - run: cargo clippy -p parapet --features serde --all-targets -- -D warnings
       - run: cargo test -p parapet --features serde
 
+  # Line coverage of the library, source-based instrumentation via
+  # cargo-llvm-cov. COVERAGE_FLOOR is enforced: raise it when the real number
+  # rises, never lower it to turn a red build green.
+  coverage:
+    runs-on: ubuntu-latest
+    env:
+      COVERAGE_FLOOR: "98"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Measure coverage
+        # Run the instrumented tests once, then format the same data three ways.
+        run: |
+          cargo llvm-cov --no-report -p parapet --all-features --lib
+          cargo llvm-cov report --summary-only | tee coverage.txt
+          cargo llvm-cov report --lcov --output-path lcov.info
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo '### Coverage'
+            echo
+            echo '```'
+            cat coverage.txt || echo '(no summary produced)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce the coverage floor
+        run: cargo llvm-cov report --fail-under-lines "${COVERAGE_FLOOR}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 7
+
   conformance-compile:
     name: CRS @rx compile coverage
     runs-on: ubuntu-latest

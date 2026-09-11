@@ -1021,4 +1021,31 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn decoder_edge_branches() {
+        // urlDecodeUni leaves a malformed escape verbatim.
+        assert_eq!(t(T::UrlDecodeUni, "%uZZZZ"), "%uZZZZ");
+        assert_eq!(t(T::UrlDecodeUni, "%u"), "%u");
+        assert_eq!(t(T::UrlDecodeUni, "%GG"), "%GG");
+        assert_eq!(t(T::UrlDecodeUni, "%"), "%");
+        // The single-character C escapes.
+        assert_eq!(
+            T::EscapeSeqDecode.apply(br"\a\b\f\v").into_owned(),
+            vec![0x07, 0x08, 0x0c, 0x0b]
+        );
+        // A CSS backslash-newline is a line continuation and vanishes.
+        assert_eq!(
+            t(
+                T::CssDecode,
+                "a\\
+b"
+            ),
+            "ab"
+        );
+        // A zero code point resolves to the replacement character.
+        assert_eq!(t(T::CssDecode, "\\0"), "\u{FFFD}");
+        // Base64 with a 2- and 3-char remainder still decodes the partial bytes.
+        assert_eq!(t(T::Base64Decode, "TWE"), "Ma");
+        assert_eq!(t(T::Base64Decode, "TQ"), "M");
+    }
 }

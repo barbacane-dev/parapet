@@ -536,3 +536,92 @@ fn setvar_spec(sv: &SetVar) -> SetVarSpec {
         value: sv.value.as_deref().map(Template::parse),
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::matcher::NoDataLoader;
+    use crate::parse;
+
+    fn compile_src(src: &str) -> Result<RuleSet, CompileError> {
+        RuleSet::compile(&parse(src, "test.conf").unwrap(), &NoDataLoader)
+    }
+
+    #[test]
+    fn a_rule_carrying_every_metadata_action_compiles() {
+        // Exercises the apply_action arms: metadata, disruptive, status,
+        // logging, initcol and the accuracy/maturity/rev/ver no-ops.
+        let src = r#"SecRule ARGS "@rx x" "id:1,phase:2,deny,status:403,msg:'m',logdata:'d',tag:'t1',tag:'t2',severity:'CRITICAL',rev:'2',ver:'CRS/4',accuracy:'9',maturity:'5',capture,multiMatch,log,auditlog,noauditlog,initcol:ip=%{remote_addr},t:none""#;
+        let rs = compile_src(src).unwrap();
+        assert_eq!(rs.rule_count(), 1);
+        let rule = rs.rule_at(0).unwrap();
+        assert_eq!(rule.tags, vec!["t1", "t2"]);
+        assert_eq!(rule.status, Some(403));
+        assert_eq!(rule.severity, Some(crate::rule::Severity::Critical));
+        assert!(rule.capture && rule.multi_match);
+    }
+
+    #[test]
+    fn redirect_and_drop_actions_compile() {
+        assert!(compile_src(r#"SecRule ARGS "@rx x" "id:1,phase:1,drop""#).is_ok());
+        assert!(compile_src(r#"SecRule ARGS "@rx x" "id:1,phase:1,redirect:/blocked""#).is_ok());
+    }
+
+    #[test]
+    fn sec_default_action_resolves_block_for_each_disruptive() {
+        for (default, ok_status) in [
+            ("deny,status:406", 406u16),
+            ("drop", 403),
+            ("redirect:/x", 403),
+        ] {
+            let src = format!(
+                "SecDefaultAction \"phase:1,log,{default}\"\nSecRule ARGS \"@rx a\" \"id:1,phase:1,block\""
+            );
+            let rs = compile_src(&src).unwrap();
+            let rule = rs.rule_at(0).unwrap();
+            assert!(rule.disruptive.is_some());
+            let _ = ok_status;
+        }
+        // A `pass` default leaves block scoring rather than blocking.
+        let rs = compile_src(
+            "SecDefaultAction \"phase:1,pass\"\nSecRule ARGS \"@rx a\" \"id:1,phase:1,block\"",
+        )
+        .unwrap();
+        assert_eq!(rs.rule_at(0).unwrap().disruptive, Some(Disruptive::Pass));
+    }
+
+    #[test]
+    fn an_unimplemented_operator_is_a_compile_error() {
+        let err = compile_src(r#"SecRule ARGS "@detectSQLi" "id:1,phase:2,deny""#).unwrap_err();
+        assert!(matches!(err, CompileError::Operator { .. }));
+    }
+
+    #[test]
+    fn a_chain_link_compiles_its_transforms_capture_and_setvars() {
+        let src = r#"
+SecRule ARGS "@rx x" "id:1,phase:2,deny,chain"
+    SecRule ARGS "@rx (y)" "t:lowercase,capture,setvar:'tx.z=1'"
+"#;
+        let rs = compile_src(src).unwrap();
+        let rule = rs.rule_at(0).unwrap();
+        assert_eq!(rule.chain.len(), 1);
+        let link = &rule.chain[0];
+        assert!(link.capture);
+        assert_eq!(link.transformations, vec![Transformation::Lowercase]);
+        assert_eq!(link.setvars.len(), 1);
+    }
+
+    #[test]
+    fn rules_in_phase_and_marker_count_report_structure() {
+        let src = r#"
+SecRule ARGS "@rx a" "id:1,phase:1,pass"
+SecRule ARGS "@rx b" "id:2,phase:2,pass"
+SecMarker HERE
+"#;
+        let rs = compile_src(src).unwrap();
+        assert_eq!(rs.rules_in_phase(Phase::RequestHeaders), 1);
+        assert_eq!(rs.rules_in_phase(Phase::RequestBody), 1);
+        assert_eq!(rs.marker_count(), 1);
+    }
+}

@@ -1391,4 +1391,182 @@ SecRule ARGS "@rx attack" "id:1,phase:1,block"
         assert_eq!(tx.process_request_headers(), Verdict::Allow);
         assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
     }
+
+    #[test]
+    fn accessors_report_the_transaction_state() {
+        let rs = rules(
+            r#"SecRule ARGS "@rx attack" "id:7,phase:1,pass,msg:'hit',setvar:'tx.score=+3'""#,
+        );
+        let mut tx = Transaction::new(&rs, EngineMode::Blocking);
+        tx.set_remote_addr("203.0.113.9");
+        tx.process_uri("GET", "/?q=attack", "HTTP/1.1");
+        assert_eq!(tx.process_request_headers(), Verdict::Allow);
+        assert_eq!(*tx.verdict(), Verdict::Allow);
+        assert_eq!(tx.matches().len(), 1);
+        assert_eq!(tx.matched_ids(), vec![7]);
+        assert_eq!(tx.last_completed_phase(), Some(Phase::RequestHeaders));
+        assert_eq!(tx.anomaly_score("score"), 3);
+        assert_eq!(tx.vars.remote_addr, b"203.0.113.9");
+    }
+
+    #[test]
+    fn a_response_header_rule_can_block() {
+        let rs = rules(r#"SecRule RESPONSE_HEADERS:X-Leak "@streq yes" "id:1,phase:3,deny""#);
+        let mut tx = get(&rs, "/");
+        tx.process_request_headers();
+        tx.process_request_body();
+        tx.set_response_status(200);
+        tx.add_response_header("X-Leak", "yes");
+        assert!(matches!(
+            tx.process_response_headers(),
+            Verdict::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn phase_five_logging_runs_without_blocking() {
+        let rs = rules(r#"SecAction "id:1,phase:5,pass,nolog,setvar:'tx.logged=1'""#);
+        let mut tx = get(&rs, "/");
+        tx.process_request_headers();
+        assert_eq!(tx.process_logging(), Verdict::Allow);
+        assert_eq!(tx.vars.tx_get("logged"), Some(&b"1"[..]));
+    }
+
+    #[test]
+    fn ctl_rule_remove_by_id_disables_a_later_rule() {
+        // A range form covers the id, so rule 2 is switched off before it runs.
+        let rs = rules(
+            r#"
+SecAction "id:1,phase:1,pass,nolog,ctl:ruleRemoveById=900-1000"
+SecRule ARGS "@rx attack" "id:950,phase:1,deny"
+"#,
+        );
+        let mut tx = get(&rs, "/?q=attack");
+        assert_eq!(tx.process_request_headers(), Verdict::Allow);
+    }
+
+    #[test]
+    fn ctl_rule_remove_by_tag_disables_a_tagged_rule() {
+        let rs = rules(
+            r#"
+SecAction "id:1,phase:1,pass,nolog,ctl:ruleRemoveByTag=noisy"
+SecRule ARGS "@rx attack" "id:2,phase:1,deny,tag:noisy"
+"#,
+        );
+        let mut tx = get(&rs, "/?q=attack");
+        assert_eq!(tx.process_request_headers(), Verdict::Allow);
+    }
+
+    #[test]
+    fn ctl_rule_remove_target_drops_one_variable_from_one_rule() {
+        // The by-id form removes ARGS:allowed from rule 2 only.
+        let rs = rules(
+            r#"
+SecAction "id:1,phase:1,pass,nolog,ctl:ruleRemoveTargetById=2;ARGS:allowed"
+SecRule ARGS "@rx attack" "id:2,phase:1,deny"
+"#,
+        );
+        let mut tx = get(&rs, "/?allowed=attack");
+        assert_eq!(tx.process_request_headers(), Verdict::Allow);
+        // A different argument is still inspected.
+        let mut tx = get(&rs, "/?other=attack");
+        assert!(matches!(tx.process_request_headers(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn ctl_rule_remove_target_by_tag_drops_a_variable_from_tagged_rules() {
+        let rs = rules(
+            r#"
+SecAction "id:1,phase:1,pass,nolog,ctl:ruleRemoveTargetByTag=grp;ARGS:allowed"
+SecRule ARGS "@rx attack" "id:2,phase:1,deny,tag:grp"
+"#,
+        );
+        let mut tx = get(&rs, "/?allowed=attack");
+        assert_eq!(tx.process_request_headers(), Verdict::Allow);
+    }
+
+    #[test]
+    fn ctl_request_body_processor_forces_a_parser() {
+        // Force JSON parsing for a body whose content type would select nothing.
+        let rs = rules(
+            r#"
+SecRule REQUEST_HEADERS:X-Kind "@streq json" "id:1,phase:1,pass,nolog,ctl:requestBodyProcessor=JSON"
+SecRule ARGS "@rx payload" "id:2,phase:2,deny"
+"#,
+        );
+        let mut tx = Transaction::new(&rs, EngineMode::Blocking);
+        tx.process_uri("POST", "/", "HTTP/1.1");
+        tx.add_request_header("X-Kind", "json");
+        tx.add_request_header("Content-Type", "application/octet-stream");
+        tx.process_request_headers();
+        tx.set_request_body(br#"{"a":"payload"}"#, None);
+        assert!(matches!(tx.process_request_body(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn ctl_rule_engine_off_stops_all_further_evaluation() {
+        let rs = rules(
+            r#"
+SecAction "id:1,phase:1,pass,nolog,ctl:ruleEngine=Off"
+SecRule ARGS "@rx attack" "id:2,phase:1,deny"
+"#,
+        );
+        let mut tx = get(&rs, "/?q=attack");
+        assert_eq!(tx.process_request_headers(), Verdict::Allow);
+    }
+
+    #[test]
+    fn ctl_rule_engine_detection_only_records_without_blocking() {
+        let rs = rules(
+            r#"
+SecAction "id:1,phase:1,pass,nolog,ctl:ruleEngine=DetectionOnly"
+SecRule ARGS "@rx attack" "id:2,phase:1,deny,msg:'seen'"
+"#,
+        );
+        let mut tx = get(&rs, "/?q=attack");
+        assert_eq!(tx.process_request_headers(), Verdict::Allow);
+        // The attack rule matched (and recorded) even though nothing blocked.
+        assert!(tx.matched_ids().contains(&2));
+    }
+
+    #[test]
+    fn ctl_audit_engine_is_accepted_and_changes_nothing() {
+        let rs = rules(
+            r#"
+SecAction "id:1,phase:1,pass,nolog,ctl:auditEngine=Off"
+SecRule ARGS "@rx attack" "id:2,phase:1,deny"
+"#,
+        );
+        let mut tx = get(&rs, "/?q=attack");
+        assert!(matches!(tx.process_request_headers(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn a_semicolon_separates_urlencoded_pairs_and_blanks_are_skipped() {
+        let rs = rules(r#"SecRule ARGS:b "@rx attack" "id:1,phase:1,deny""#);
+        let mut tx = get(&rs, "/?a=1;;b=attack");
+        assert!(matches!(tx.process_request_headers(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn cookie_values_are_trimmed_and_blank_cookies_skipped() {
+        let rs = rules(r#"SecRule REQUEST_COOKIES:sid "@streq abc" "id:1,phase:1,deny""#);
+        let mut tx = Transaction::new(&rs, EngineMode::Blocking);
+        tx.process_uri("GET", "/", "HTTP/1.1");
+        tx.add_request_header("Cookie", "  ; sid = abc ; ");
+        assert!(matches!(tx.process_request_headers(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn setvar_subtract_lowers_a_score() {
+        let rs = rules(
+            r#"
+SecAction "id:1,phase:1,pass,nolog,setvar:'tx.score=10'"
+SecAction "id:2,phase:1,pass,nolog,setvar:'tx.score=-4'"
+"#,
+        );
+        let mut tx = get(&rs, "/");
+        tx.process_request_headers();
+        assert_eq!(tx.anomaly_score("score"), 6);
+    }
 }

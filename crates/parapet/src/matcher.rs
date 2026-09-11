@@ -747,6 +747,74 @@ mod tests {
     }
 
     #[test]
+    fn dir_data_loader_reads_a_file_and_reports_a_missing_one() {
+        let dir = std::env::temp_dir().join(format!("parapet-loader-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("phrases.data"), b"etc/passwd\nwin.ini\n").unwrap();
+        let loader = DirDataLoader::new(&dir);
+        assert_eq!(
+            loader.load("phrases.data").unwrap(),
+            b"etc/passwd\nwin.ini\n"
+        );
+        assert!(loader.load("absent.data").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pm_from_file_with_only_comments_fails_to_compile() {
+        struct Empty;
+        impl DataLoader for Empty {
+            fn load(&self, _name: &str) -> Result<Vec<u8>, String> {
+                Ok(b"# only a comment\n\n".to_vec())
+            }
+        }
+        let op = Operator::parse("@pmFromFile x.data").unwrap();
+        assert!(CompiledOperator::compile(&op, &Empty).is_err());
+    }
+
+    #[test]
+    fn ip_match_folds_a_v4_mapped_network_against_a_v4_subject() {
+        // A `::ffff:x.x.x.x` network compared against a bare v4 address.
+        let op = compile("@ipMatch ::ffff:192.168.0.0/120");
+        assert!(op.evaluate(b"192.168.0.5", &EmptyContext, false).matched);
+        assert!(!op.evaluate(b"192.168.1.5", &EmptyContext, false).matched);
+    }
+
+    #[test]
+    fn ip_match_reads_bracketed_v6_and_host_port_forms() {
+        let v6 = compile("@ipMatch 2001:db8::/32");
+        assert!(v6.evaluate(b"[2001:db8::1]", &EmptyContext, false).matched);
+        let v4 = compile("@ipMatch 192.168.0.0/16");
+        assert!(
+            v4.evaluate(b"192.168.1.1:8080", &EmptyContext, false)
+                .matched
+        );
+    }
+
+    #[test]
+    fn ip_match_rejects_non_utf8_and_unparseable_subjects() {
+        let op = compile("@ipMatch 10.0.0.0/8");
+        assert!(!op.evaluate(&[0xff, 0xfe], &EmptyContext, false).matched);
+        assert!(!op.evaluate(b"", &EmptyContext, false).matched);
+    }
+
+    #[test]
+    fn rx_capture_on_a_non_match_yields_no_groups() {
+        let op = compile(r"@rx (\d+)-(\d+)");
+        let r = op.evaluate(b"no digits here", &EmptyContext, true);
+        assert!(!r.matched);
+        assert!(r.captures.is_empty());
+    }
+
+    #[test]
+    fn contains_and_within_handle_empty_and_oversized_operands() {
+        // @within: subject inside operand; an empty subject is contained.
+        assert!(matches("@within anything", ""));
+        // @contains with a needle longer than the subject cannot match.
+        assert!(!matches("@contains longerneedle", "hay"));
+    }
+
+    #[test]
     fn pm_from_file_skips_comments_and_blank_lines() {
         struct Inline;
         impl DataLoader for Inline {
