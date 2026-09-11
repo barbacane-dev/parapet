@@ -13,6 +13,7 @@ authors.workspace = true
 
 [dependencies]
 aho-corasick.workspace = true
+libinjectionrs.workspace = true
 quick-xml.workspace = true
 regex.workspace = true
 serde = { workspace = true, optional = true }

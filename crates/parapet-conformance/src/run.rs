@@ -72,9 +72,8 @@ const CASES: &[Case] = &[
         uri: "/item?id=1%27%20OR%20%271%27%3D%271",
         body: None,
         expect_block: true,
-        // Rule 942100 is the libinjection SQLi rule and this is its signature
-        // catch. It is one of the four rules that refuse to compile.
-        known_gap: Some("needs @detectSQLi (rule 942100)"),
+        // Caught by rule 942100, the libinjection SQLi rule (@detectSQLi).
+        known_gap: None,
     },
     Case {
         name: "sqli union select",
@@ -227,8 +226,8 @@ pub fn run(rules_dir: &str) -> Result<usize, String> {
     }
 
     let loader = DirDataLoader::new(rules_dir);
-    // compile_all, not compile: the two libinjection operators are known to
-    // refuse, and this tool measures progress rather than enforcing rules.
+    // compile_all, not compile: this tool measures progress and reports any
+    // rule that fails to compile rather than aborting on the first one.
     let (ruleset, compile_errors) = RuleSet::compile_all(&directives, &loader);
 
     println!("rules compiled   : {}", ruleset.rule_count());
@@ -243,10 +242,7 @@ pub fn run(rules_dir: &str) -> Result<usize, String> {
         };
         println!("  phase {phase}         : {}", ruleset.rules_in_phase(p));
     }
-    println!(
-        "rules refused    : {} (known: the two libinjection operators)",
-        compile_errors.len()
-    );
+    println!("rules refused    : {}", compile_errors.len());
     println!();
 
     let mut wrong = 0usize;
