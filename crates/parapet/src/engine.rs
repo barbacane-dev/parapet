@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::action::{Action, Ctl, SetVar, SetVarOp, Transformation};
+use crate::collections::{CompiledSelector, CompiledTarget};
 use crate::macros::Template;
 use crate::matcher::{CompiledOperator, DataLoader, OperatorCompileError};
 use crate::rule::{Collection, Directive, Rule, Selector, Severity, Target};
@@ -39,7 +40,7 @@ pub struct SetVarSpec {
 #[derive(Debug)]
 pub struct ChainLink {
     /// Variables this link inspects.
-    pub targets: Vec<Target>,
+    pub targets: Vec<CompiledTarget>,
     /// The link's test.
     pub operator: Option<CompiledOperator>,
     /// Whether the link's result is inverted.
@@ -60,7 +61,7 @@ pub struct CompiledRule {
     /// Which phase the rule runs in.
     pub phase: Phase,
     /// Variables the rule inspects. Empty for `SecAction`.
-    pub targets: Vec<Target>,
+    pub targets: Vec<CompiledTarget>,
     /// The rule's test. `None` means always match, as `SecAction` does.
     pub operator: Option<CompiledOperator>,
     /// Whether the operator result is inverted.
@@ -365,14 +366,14 @@ fn compile_rule(
 ) -> Result<CompiledRule, CompileError> {
     let id = starter.id();
     let line = starter.line;
-    check_targets(&starter.targets, id, line)?;
+    let targets = compile_targets(&starter.targets, id, line)?;
     let operator = compile_operator(starter, loader)?;
 
     let mut compiled = CompiledRule {
         id,
         // SecLang defaults a rule with no explicit phase to phase 2.
         phase: Phase::RequestBody,
-        targets: starter.targets.clone(),
+        targets,
         operator,
         negated: starter.negated,
         transformations: Vec::new(),
@@ -397,13 +398,13 @@ fn compile_rule(
     }
 
     for link in links {
-        check_targets(
+        let link_targets = compile_targets(
             &link.targets,
             link.id().unwrap_or(id.unwrap_or(0)),
             link.line,
         )?;
         let mut chain_link = ChainLink {
-            targets: link.targets.clone(),
+            targets: link_targets,
             operator: compile_operator(link, loader)?,
             negated: link.negated,
             transformations: Vec::new(),
@@ -426,44 +427,57 @@ fn compile_rule(
     Ok(compiled)
 }
 
-/// Reject targets Parapet cannot resolve, before they become silent no-ops.
+/// Compile a target list into its evaluable form.
 ///
-/// A selector that cannot be evaluated selects nothing, and a rule that
-/// inspects nothing cannot fire. Both an unsupported XPath and an uncompilable
-/// regex selector are refused here so that failure surfaces at compile time
-/// rather than as a silent bypass at request time.
-fn check_targets(
+/// A regex selector is compiled once here rather than on every resolution, and
+/// a selector that cannot be evaluated is refused rather than left to select
+/// nothing at request time: a rule that inspects nothing cannot fire, and it
+/// would do so silently. An unsupported XPath and an uncompilable regex
+/// selector both surface here, at compile time.
+fn compile_targets(
     targets: &[Target],
     id: impl Into<Option<u32>>,
     line: usize,
-) -> Result<(), CompileError> {
+) -> Result<Vec<CompiledTarget>, CompileError> {
     let id = id.into();
-    for target in targets {
-        match &target.selector {
-            Some(Selector::XPath(expression)) if target.collection == Collection::Xml => {
-                if !crate::xml::xpath_is_supported(expression) {
-                    return Err(CompileError::UnsupportedXPath {
-                        id: id.unwrap_or(0),
-                        line,
-                        expression: expression.clone(),
-                        supported: crate::xml::SUPPORTED_XPATH,
-                    });
+    targets
+        .iter()
+        .map(|target| {
+            let selector = match &target.selector {
+                None => None,
+                Some(Selector::Name(name)) => Some(CompiledSelector::Name(name.clone())),
+                Some(Selector::XPath(expression)) => {
+                    if target.collection == Collection::Xml
+                        && !crate::xml::xpath_is_supported(expression)
+                    {
+                        return Err(CompileError::UnsupportedXPath {
+                            id: id.unwrap_or(0),
+                            line,
+                            expression: expression.clone(),
+                            supported: crate::xml::SUPPORTED_XPATH,
+                        });
+                    }
+                    Some(CompiledSelector::XPath(expression.clone()))
                 }
-            }
-            // The same engine compiles this at resolve time. Validating it here
-            // with the same constructor guarantees that never fails silently.
-            Some(Selector::Regex(pattern)) => {
-                regex::Regex::new(pattern).map_err(|e| CompileError::InvalidSelector {
-                    id: id.unwrap_or(0),
-                    line,
-                    selector: pattern.clone(),
-                    error: e.to_string(),
-                })?;
-            }
-            _ => {}
-        }
-    }
-    Ok(())
+                Some(Selector::Regex(pattern)) => {
+                    let re =
+                        regex::Regex::new(pattern).map_err(|e| CompileError::InvalidSelector {
+                            id: id.unwrap_or(0),
+                            line,
+                            selector: pattern.clone(),
+                            error: e.to_string(),
+                        })?;
+                    Some(CompiledSelector::Regex(re))
+                }
+            };
+            Ok(CompiledTarget {
+                collection: target.collection,
+                selector,
+                exclusion: target.exclusion,
+                count: target.count,
+            })
+        })
+        .collect()
 }
 
 fn compile_operator(

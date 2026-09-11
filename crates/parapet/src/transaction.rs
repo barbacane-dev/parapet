@@ -5,10 +5,9 @@
 //! first disruptive action, as SecLang specifies.
 
 use crate::action::{Ctl, RuleEngineMode, SetVarOp, Transformation};
-use crate::collections::{BodyError, OwnedValue, Variables};
+use crate::collections::{BodyError, CompiledTarget, OwnedValue, Variables};
 use crate::engine::{ChainLink, CompiledRule, Disruptive, RuleSet, SetVarSpec};
 use crate::matcher::CompiledOperator;
-use crate::rule::Target;
 use crate::{Phase, Verdict};
 
 /// Whether the engine blocks or only records.
@@ -68,7 +67,7 @@ pub struct Transaction<'r> {
 /// One operator evaluation: what to inspect, how to prepare it, and what to
 /// test it with.
 struct Step<'a> {
-    targets: &'a [Target],
+    targets: &'a [CompiledTarget],
     operator: &'a CompiledOperator,
     negated: bool,
     transformations: &'a [Transformation],
