@@ -158,6 +158,37 @@ pub enum CompileError {
         /// The marker name.
         marker: String,
     },
+    /// A `skipAfter:` names a marker at or before the rule itself.
+    ///
+    /// Evaluation resumes just after the marker, so a marker that is not ahead
+    /// of the rule sends evaluation backward. A rule that skips backward and
+    /// still matches re-runs forever, hanging the request. Refused rather than
+    /// allowed: a jump that loops is not a jump.
+    #[error("rule {id} (line {line}) skips to {marker:?}, which is not ahead of it; skipAfter must jump forward")]
+    BackwardSkip {
+        /// The rule id, or 0 when it has none.
+        id: u32,
+        /// Source line.
+        line: usize,
+        /// The marker name.
+        marker: String,
+    },
+    /// A regex member-selector the engine cannot compile.
+    ///
+    /// Refused rather than resolved to nothing: an uncompilable selector
+    /// silently selects no members, which turns the rule into a bypass with no
+    /// signal, exactly as an unsupported XPath would.
+    #[error("rule {id} (line {line}) selects members with /{selector}/, which is not a valid regex: {error}")]
+    InvalidSelector {
+        /// The rule id, or 0 when it has none.
+        id: u32,
+        /// Source line.
+        line: usize,
+        /// The selector pattern as written.
+        selector: String,
+        /// The regex parse error.
+        error: String,
+    },
 }
 
 impl RuleSet {
@@ -259,24 +290,34 @@ impl RuleSet {
             });
         }
 
-        // Resolve every skipAfter now, so a typo is a compile error rather
-        // than a jump that silently does nothing at request time.
-        let mut unknown_markers: Vec<CompileError> = Vec::new();
-        for entry in &set.entries {
+        // Resolve every skipAfter now, so a typo, or a jump that would loop, is
+        // a compile error rather than a surprise at request time.
+        let mut marker_errors: Vec<CompileError> = Vec::new();
+        for (index, entry) in set.entries.iter().enumerate() {
             if let Entry::Rule(rule) = entry {
                 if let Some(marker) = &rule.skip_after {
-                    if !set.marker_index.contains_key(marker) {
-                        unknown_markers.push(CompileError::UnknownMarker {
+                    match set.marker_index.get(marker) {
+                        None => marker_errors.push(CompileError::UnknownMarker {
                             id: rule.id.unwrap_or(0),
                             line: rule.line,
                             marker: marker.clone(),
-                        });
+                        }),
+                        // Evaluation resumes at the marker's slot + 1, so a
+                        // marker that is not ahead of the rule loops.
+                        Some(&position) if position <= index => {
+                            marker_errors.push(CompileError::BackwardSkip {
+                                id: rule.id.unwrap_or(0),
+                                line: rule.line,
+                                marker: marker.clone(),
+                            })
+                        }
+                        Some(_) => {}
                     }
                 }
             }
         }
 
-        errors.extend(unknown_markers);
+        errors.extend(marker_errors);
         (set, errors)
     }
 
@@ -386,6 +427,11 @@ fn compile_rule(
 }
 
 /// Reject targets Parapet cannot resolve, before they become silent no-ops.
+///
+/// A selector that cannot be evaluated selects nothing, and a rule that
+/// inspects nothing cannot fire. Both an unsupported XPath and an uncompilable
+/// regex selector are refused here so that failure surfaces at compile time
+/// rather than as a silent bypass at request time.
 fn check_targets(
     targets: &[Target],
     id: impl Into<Option<u32>>,
@@ -393,18 +439,28 @@ fn check_targets(
 ) -> Result<(), CompileError> {
     let id = id.into();
     for target in targets {
-        if target.collection != Collection::Xml {
-            continue;
-        }
-        if let Some(Selector::XPath(expression)) = &target.selector {
-            if !crate::xml::xpath_is_supported(expression) {
-                return Err(CompileError::UnsupportedXPath {
+        match &target.selector {
+            Some(Selector::XPath(expression)) if target.collection == Collection::Xml => {
+                if !crate::xml::xpath_is_supported(expression) {
+                    return Err(CompileError::UnsupportedXPath {
+                        id: id.unwrap_or(0),
+                        line,
+                        expression: expression.clone(),
+                        supported: crate::xml::SUPPORTED_XPATH,
+                    });
+                }
+            }
+            // The same engine compiles this at resolve time. Validating it here
+            // with the same constructor guarantees that never fails silently.
+            Some(Selector::Regex(pattern)) => {
+                regex::Regex::new(pattern).map_err(|e| CompileError::InvalidSelector {
                     id: id.unwrap_or(0),
                     line,
-                    expression: expression.clone(),
-                    supported: crate::xml::SUPPORTED_XPATH,
-                });
+                    selector: pattern.clone(),
+                    error: e.to_string(),
+                })?;
             }
+            _ => {}
         }
     }
     Ok(())
