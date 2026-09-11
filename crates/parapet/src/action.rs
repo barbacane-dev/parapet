@@ -514,4 +514,130 @@ mod tests {
         assert!(Action::parse("id").is_err());
         assert!(Action::parse("msg").is_err());
     }
+
+    #[test]
+    fn parses_every_phase_spelling() {
+        for (spec, phase) in [
+            ("phase:1", Phase::RequestHeaders),
+            ("phase:request", Phase::RequestHeaders),
+            ("phase:2", Phase::RequestBody),
+            ("phase:3", Phase::ResponseHeaders),
+            ("phase:response", Phase::ResponseHeaders),
+            ("phase:4", Phase::ResponseBody),
+            ("phase:5", Phase::Logging),
+            ("phase:logging", Phase::Logging),
+        ] {
+            assert_eq!(Action::parse(spec).unwrap(), Action::Phase(phase));
+        }
+        assert!(Action::parse("phase:9").is_err());
+    }
+
+    #[test]
+    fn parses_accuracy_and_maturity_and_rejects_bad_values() {
+        assert_eq!(Action::parse("accuracy:9").unwrap(), Action::Accuracy(9));
+        assert_eq!(Action::parse("maturity:5").unwrap(), Action::Maturity(5));
+        assert!(Action::parse("accuracy:xyz").is_err());
+        assert!(Action::parse("maturity:999").is_err());
+    }
+
+    #[test]
+    fn parses_disruptive_and_metadata_actions() {
+        assert_eq!(Action::parse("deny").unwrap(), Action::Deny);
+        assert_eq!(Action::parse("drop").unwrap(), Action::Drop);
+        assert_eq!(Action::parse("pass").unwrap(), Action::Pass);
+        assert_eq!(Action::parse("block").unwrap(), Action::Block);
+        assert_eq!(
+            Action::parse("redirect:/blocked").unwrap(),
+            Action::Redirect("/blocked".into())
+        );
+        assert_eq!(Action::parse("status:406").unwrap(), Action::Status(406));
+        assert!(Action::parse("status:notnum").is_err());
+        assert_eq!(Action::parse("rev:2").unwrap(), Action::Rev("2".into()));
+        assert_eq!(
+            Action::parse("ver:OWASP_CRS/4.0").unwrap(),
+            Action::Ver("OWASP_CRS/4.0".into())
+        );
+        assert_eq!(
+            Action::parse("tag:attack-sqli").unwrap(),
+            Action::Tag("attack-sqli".into())
+        );
+        assert_eq!(
+            Action::parse("logdata:x").unwrap(),
+            Action::LogData("x".into())
+        );
+        assert_eq!(Action::parse("log").unwrap(), Action::Log);
+        assert_eq!(Action::parse("auditlog").unwrap(), Action::AuditLog);
+        assert_eq!(Action::parse("noauditlog").unwrap(), Action::NoAuditLog);
+        assert_eq!(
+            Action::parse("skipAfter:END").unwrap(),
+            Action::SkipAfter("END".into())
+        );
+    }
+
+    #[test]
+    fn parses_initcol_and_rejects_a_missing_equals() {
+        assert_eq!(
+            Action::parse("initcol:ip=%{remote_addr}").unwrap(),
+            Action::InitCol {
+                collection: "ip".into(),
+                value: "%{remote_addr}".into()
+            }
+        );
+        assert!(Action::parse("initcol:noequals").is_err());
+    }
+
+    #[test]
+    fn setvar_without_a_name_is_rejected() {
+        assert!(Action::parse("setvar:=5").is_err());
+    }
+
+    #[test]
+    fn parses_every_ctl_directive() {
+        use RuleEngineMode::*;
+        for (spec, mode) in [
+            ("ctl:ruleEngine=On", On),
+            ("ctl:ruleEngine=Off", Off),
+            ("ctl:ruleEngine=DetectionOnly", DetectionOnly),
+        ] {
+            assert_eq!(
+                Action::parse(spec).unwrap(),
+                Action::Ctl(Ctl::RuleEngine(mode))
+            );
+        }
+        assert_eq!(
+            Action::parse("ctl:auditEngine=Off").unwrap(),
+            Action::Ctl(Ctl::AuditEngine("Off".into()))
+        );
+        assert_eq!(
+            Action::parse("ctl:forceRequestBodyVariable=On").unwrap(),
+            Action::Ctl(Ctl::ForceRequestBodyVariable(true))
+        );
+        assert_eq!(
+            Action::parse("ctl:requestBodyProcessor=XML").unwrap(),
+            Action::Ctl(Ctl::RequestBodyProcessor("XML".into()))
+        );
+        assert_eq!(
+            Action::parse("ctl:ruleRemoveById=942100").unwrap(),
+            Action::Ctl(Ctl::RuleRemoveById("942100".into()))
+        );
+        assert_eq!(
+            Action::parse("ctl:ruleRemoveByTag=attack-sqli").unwrap(),
+            Action::Ctl(Ctl::RuleRemoveByTag("attack-sqli".into()))
+        );
+        assert_eq!(
+            Action::parse("ctl:ruleRemoveTargetByTag=tag;ARGS:x").unwrap(),
+            Action::Ctl(Ctl::RuleRemoveTargetByTag {
+                tag: "tag".into(),
+                target: "ARGS:x".into()
+            })
+        );
+    }
+
+    #[test]
+    fn malformed_ctl_directives_are_rejected() {
+        assert!(Action::parse("ctl:noequals").is_err());
+        assert!(Action::parse("ctl:ruleEngine=Sideways").is_err());
+        assert!(Action::parse("ctl:bogusDirective=1").is_err());
+        assert!(Action::parse("ctl:ruleRemoveTargetById=942100").is_err());
+    }
 }

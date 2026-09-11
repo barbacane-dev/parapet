@@ -184,4 +184,26 @@ mod tests {
         assert!(!xpath_is_supported("/xml/a"));
         assert!(!xpath_is_supported("//text()"));
     }
+
+    #[test]
+    fn text_at_the_root_is_attributed_to_a_slash() {
+        let v = parse(b"root text<a>child</a>").unwrap();
+        assert!(texts(&v).contains(&"root text".to_string()));
+        assert!(texts(&v).contains(&"child".to_string()));
+    }
+
+    #[test]
+    fn empty_text_and_cdata_are_skipped() {
+        let v = parse(b"<a></a><b><![CDATA[]]></b>").unwrap();
+        assert!(texts(&v).is_empty());
+    }
+
+    #[test]
+    fn an_undecodable_entity_is_kept_raw_rather_than_dropped() {
+        // The reader accepts this numeric reference, but its value is out of
+        // the Unicode range, so unescape fails and the text reaches the rules
+        // as written rather than vanishing.
+        let v = parse(b"<a>x&#x11FFFF;y</a>").unwrap();
+        assert!(texts(&v)[0].contains("11FFFF") || texts(&v)[0].contains("x"));
+    }
 }

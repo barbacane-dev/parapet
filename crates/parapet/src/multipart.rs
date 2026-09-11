@@ -352,6 +352,52 @@ mod tests {
     }
 
     #[test]
+    fn an_unquoted_filename_parameter_is_read_to_the_next_separator() {
+        let raw = body(&format!(
+            "--{B}\nContent-Disposition: form-data; name=f; filename=bare.txt\n\nx\n--{B}--\n"
+        ));
+        let m = parse(&raw, B).unwrap();
+        assert_eq!(m.parts[0].name.as_deref(), Some("f"));
+        assert_eq!(m.parts[0].filename.as_deref(), Some("bare.txt"));
+    }
+
+    #[test]
+    fn a_parameter_name_inside_a_longer_word_is_not_matched() {
+        // `xfilename=` must not be read as `filename=`.
+        let raw = body(&format!(
+            "--{B}\nContent-Disposition: form-data; xfilename=\"trick\"; name=\"real\"\n\nx\n--{B}--\n"
+        ));
+        let m = parse(&raw, B).unwrap();
+        assert_eq!(m.parts[0].name.as_deref(), Some("real"));
+        assert!(m.parts[0].filename.is_none());
+    }
+
+    #[test]
+    fn an_unterminated_quoted_filename_takes_what_is_there() {
+        let raw = body(&format!(
+            "--{B}\nContent-Disposition: form-data; name=\"f\"; filename=\"open\n\nx\n--{B}--\n"
+        ));
+        let m = parse(&raw, B).unwrap();
+        assert_eq!(m.parts[0].filename.as_deref(), Some("open"));
+    }
+
+    #[test]
+    fn a_part_with_no_header_separator_has_no_body() {
+        let raw = body(&format!("--{B}\nleftover-no-blank-line\n--{B}--\n"));
+        let m = parse(&raw, B).unwrap();
+        assert_eq!(m.parts.len(), 1);
+        assert!(m.parts[0].content.is_empty());
+    }
+
+    #[test]
+    fn a_boundary_with_no_following_line_break_is_not_a_part() {
+        // `--BOUND` immediately followed by more text (no CRLF) is not a real
+        // delimiter, so no part opens there.
+        let raw = format!("--{B}xtra\r\n--{B}--\r\n").into_bytes();
+        assert!(parse(&raw, B).is_err());
+    }
+
+    #[test]
     fn does_not_panic_on_arbitrary_bytes() {
         for input in [
             &b"--"[..],

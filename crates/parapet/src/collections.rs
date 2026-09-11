@@ -532,3 +532,293 @@ pub fn collection_name(collection: Collection) -> &'static str {
         Xml => "XML",
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn target(collection: Collection, selector: Option<CompiledSelector>) -> CompiledTarget {
+        CompiledTarget {
+            collection,
+            selector,
+            exclusion: false,
+            count: false,
+        }
+    }
+
+    /// A `Variables` with every collection and scalar populated, so resolution
+    /// of any target has something to return.
+    fn populated() -> Variables {
+        let mut v = Variables::default();
+        v.args_get.push("a", &b"1"[..]);
+        v.args_post.push("b", &b"2"[..]);
+        v.request_headers.push("User-Agent", &b"curl"[..]);
+        v.request_cookies.push("sid", &b"xyz"[..]);
+        v.response_headers.push("Server", &b"nginx"[..]);
+        v.tx.push("score", &b"5"[..]);
+        v.files.push("upload", &b"evil.php"[..]);
+        v.multipart_part_headers
+            .push("Content-Type", &b"text/plain"[..]);
+        v.xml_elements.push("a", &b"text"[..]);
+        v.xml_attributes.push("attr", &b"val"[..]);
+        v.matched_vars.push("ARGS:a", &b"1"[..]);
+        v.request_method = b"GET".to_vec();
+        v.request_uri = b"/p?q=1".to_vec();
+        v.request_uri_raw = b"/p?q=1".to_vec();
+        v.request_line = b"GET /p?q=1 HTTP/1.1".to_vec();
+        v.request_protocol = b"HTTP/1.1".to_vec();
+        v.request_filename = b"/p".to_vec();
+        v.request_basename = b"p".to_vec();
+        v.query_string = b"q=1".to_vec();
+        v.request_body = b"body".to_vec();
+        v.response_body = b"resp".to_vec();
+        v.response_status = b"200".to_vec();
+        v.remote_addr = b"203.0.113.7".to_vec();
+        v.unique_id = b"uid".to_vec();
+        v.reqbody_processor = b"URLENCODED".to_vec();
+        v.files_content_size = 8;
+        v.matched_var = b"1".to_vec();
+        v
+    }
+
+    fn names(values: &[Value<'_>]) -> Vec<String> {
+        values.iter().map(|v| v.name.to_string()).collect()
+    }
+
+    #[test]
+    fn multimap_reports_length_size_and_emptiness() {
+        let mut m = Multimap::default();
+        assert!(m.is_empty());
+        m.push("a", &b"12"[..]);
+        m.push("b", &b"345"[..]);
+        assert_eq!(m.len(), 2);
+        assert!(!m.is_empty());
+        assert_eq!(m.combined_size(), 5);
+    }
+
+    #[test]
+    fn every_scalar_collection_resolves_to_its_value() {
+        use Collection::*;
+        let v = populated();
+        for (collection, expected) in [
+            (RequestMethod, "GET"),
+            (RequestUri, "/p?q=1"),
+            (RequestUriRaw, "/p?q=1"),
+            (RequestLine, "GET /p?q=1 HTTP/1.1"),
+            (RequestProtocol, "HTTP/1.1"),
+            (RequestFilename, "/p"),
+            (RequestBasename, "p"),
+            (QueryString, "q=1"),
+            (RequestBody, "body"),
+            (ResponseBody, "resp"),
+            (ResponseStatus, "200"),
+            (RemoteAddr, "203.0.113.7"),
+            (UniqueId, "uid"),
+            (ReqbodyProcessor, "URLENCODED"),
+            (MatchedVar, "1"),
+        ] {
+            let out = v.resolve(&[target(collection, None)]);
+            assert_eq!(out.len(), 1, "{collection:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&out[0].value),
+                expected,
+                "{collection:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn map_collections_resolve_with_qualified_names() {
+        use Collection::*;
+        let v = populated();
+        assert_eq!(names(&v.resolve(&[target(ArgsGet, None)])), ["ARGS_GET:a"]);
+        // ARGS spans both GET and POST.
+        assert_eq!(
+            names(&v.resolve(&[target(Args, None)])),
+            ["ARGS:a", "ARGS:b"]
+        );
+        assert_eq!(
+            names(&v.resolve(&[target(RequestHeaders, None)])),
+            ["REQUEST_HEADERS:User-Agent"]
+        );
+        assert_eq!(
+            names(&v.resolve(&[target(RequestCookies, None)])),
+            ["REQUEST_COOKIES:sid"]
+        );
+        assert_eq!(
+            names(&v.resolve(&[target(ResponseHeaders, None)])),
+            ["RESPONSE_HEADERS:Server"]
+        );
+        assert_eq!(names(&v.resolve(&[target(Tx, None)])), ["TX:score"]);
+        assert_eq!(names(&v.resolve(&[target(Files, None)])), ["FILES:upload"]);
+        assert_eq!(
+            names(&v.resolve(&[target(MultipartPartHeaders, None)])),
+            ["MULTIPART_PART_HEADERS:Content-Type"]
+        );
+        assert_eq!(
+            names(&v.resolve(&[target(MatchedVars, None)])),
+            ["MATCHED_VARS:ARGS:a"]
+        );
+    }
+
+    #[test]
+    fn names_collections_inspect_member_names_as_values() {
+        use Collection::*;
+        let v = populated();
+        for collection in [
+            ArgsNames,
+            ArgsGetNames,
+            RequestHeadersNames,
+            RequestCookiesNames,
+            FilesNames,
+        ] {
+            let out = v.resolve(&[target(collection, None)]);
+            assert!(!out.is_empty(), "{collection:?}");
+            // The value equals the member name.
+            let member = out[0].name.rsplit(':').next().unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&out[0].value),
+                member,
+                "{collection:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn combined_size_collections_report_a_number() {
+        use Collection::*;
+        let v = populated();
+        let args = v.resolve(&[target(ArgsCombinedSize, None)]);
+        assert_eq!(String::from_utf8_lossy(&args[0].value), "2"); // "1" + "2"
+        let files = v.resolve(&[target(FilesCombinedSize, None)]);
+        assert_eq!(String::from_utf8_lossy(&files[0].value), "8");
+    }
+
+    #[test]
+    fn xml_resolves_elements_and_attributes() {
+        use Collection::*;
+        let v = populated();
+        let elements = v.resolve(&[target(Xml, Some(CompiledSelector::XPath("/*".into())))]);
+        assert_eq!(String::from_utf8_lossy(&elements[0].value), "text");
+        let attrs = v.resolve(&[target(Xml, Some(CompiledSelector::XPath("//@*".into())))]);
+        assert_eq!(String::from_utf8_lossy(&attrs[0].value), "val");
+        // An XPath form that is neither yields nothing.
+        assert!(v
+            .resolve(&[target(Xml, Some(CompiledSelector::XPath("/root".into())))])
+            .is_empty());
+    }
+
+    #[test]
+    fn a_regex_selector_keeps_only_matching_members() {
+        use Collection::*;
+        let mut v = Variables::default();
+        v.request_headers.push("X-Api-Key", &b"secret"[..]);
+        v.request_headers.push("User-Agent", &b"curl"[..]);
+        let re = CompiledSelector::Regex(regex::Regex::new("^X-").unwrap());
+        let out = v.resolve(&[target(RequestHeaders, Some(re))]);
+        assert_eq!(names(&out), ["REQUEST_HEADERS:X-Api-Key"]);
+    }
+
+    #[test]
+    fn a_count_target_counts_members_and_set_scalars() {
+        use Collection::*;
+        let v = populated();
+        let count = |c, sel| {
+            let out = v.resolve(&[CompiledTarget {
+                collection: c,
+                selector: sel,
+                exclusion: false,
+                count: true,
+            }]);
+            String::from_utf8_lossy(&out[0].value).into_owned()
+        };
+        // Map: number of members.
+        assert_eq!(count(Args, None), "2");
+        // Scalar that is set counts as one.
+        assert_eq!(count(RequestUri, None), "1");
+        // A selector narrows the count.
+        assert_eq!(
+            count(
+                RequestHeaders,
+                Some(CompiledSelector::Name("user-agent".into()))
+            ),
+            "1"
+        );
+        // An unset scalar counts as zero.
+        let empty = Variables::default();
+        let out = empty.resolve(&[CompiledTarget {
+            collection: RequestUri,
+            selector: None,
+            exclusion: false,
+            count: true,
+        }]);
+        assert_eq!(String::from_utf8_lossy(&out[0].value), "0");
+    }
+
+    #[test]
+    fn exclusion_by_name_and_regex_and_whole_collection() {
+        use Collection::*;
+        let mut v = Variables::default();
+        v.args_get.push("keep", &b"1"[..]);
+        v.args_get.push("__utmz", &b"2"[..]);
+        // Name exclusion.
+        let out = v.resolve(&[
+            target(ArgsGet, None),
+            CompiledTarget {
+                collection: ArgsGet,
+                selector: Some(CompiledSelector::Name("__utmz".into())),
+                exclusion: true,
+                count: false,
+            },
+        ]);
+        assert_eq!(names(&out), ["ARGS_GET:keep"]);
+        // Regex exclusion.
+        let out = v.resolve(&[
+            target(ArgsGet, None),
+            CompiledTarget {
+                collection: ArgsGet,
+                selector: Some(CompiledSelector::Regex(regex::Regex::new("^__ut").unwrap())),
+                exclusion: true,
+                count: false,
+            },
+        ]);
+        assert_eq!(names(&out), ["ARGS_GET:keep"]);
+        // Whole-collection exclusion removes everything from that collection.
+        let out = v.resolve(&[
+            target(ArgsGet, None),
+            CompiledTarget {
+                collection: ArgsGet,
+                selector: None,
+                exclusion: true,
+                count: false,
+            },
+        ]);
+        assert!(out.is_empty());
+        // An XPath exclusion never matches (XML has no exclusion semantics here).
+        let out = v.resolve(&[
+            target(ArgsGet, None),
+            CompiledTarget {
+                collection: ArgsGet,
+                selector: Some(CompiledSelector::XPath("/*".into())),
+                exclusion: true,
+                count: false,
+            },
+        ]);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn macro_context_reads_tx_and_scalars_and_reports_unknown() {
+        let v = populated();
+        assert_eq!(v.lookup("tx.score").as_deref(), Some(&b"5"[..]));
+        assert_eq!(v.lookup("TX:score").as_deref(), Some(&b"5"[..]));
+        assert_eq!(v.lookup("request_method").as_deref(), Some(&b"GET"[..]));
+        assert_eq!(
+            v.lookup("remote_addr").as_deref(),
+            Some(&b"203.0.113.7"[..])
+        );
+        assert_eq!(v.lookup("matched_var_name"), Some(Cow::Borrowed(&b""[..])));
+        assert!(v.lookup("nonexistent_variable").is_none());
+    }
+}

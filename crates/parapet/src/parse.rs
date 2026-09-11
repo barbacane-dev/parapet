@@ -533,6 +533,120 @@ SecRule REQUEST_COOKIES|!REQUEST_COOKIES:/__utm/|ARGS_NAMES "@detectSQLi" \
     }
 
     #[test]
+    fn sec_rule_arity_is_enforced() {
+        assert!(matches!(
+            parse("SecRule ARGS\n", "t").unwrap_err().kind,
+            ParseErrorKind::Arity { .. }
+        ));
+    }
+
+    #[test]
+    fn a_bad_operator_or_action_in_a_secrule_is_reported() {
+        assert!(matches!(
+            parse("SecRule ARGS \"@nope x\" \"id:1\"\n", "t")
+                .unwrap_err()
+                .kind,
+            ParseErrorKind::Operator(_)
+        ));
+        assert!(matches!(
+            parse("SecRule ARGS \"@rx x\" \"id:notanumber\"\n", "t")
+                .unwrap_err()
+                .kind,
+            ParseErrorKind::Action(_)
+        ));
+    }
+
+    #[test]
+    fn a_three_token_secrule_without_actions_parses() {
+        let d = parse("SecRule ARGS \"@rx x\"\n", "t").unwrap();
+        let Directive::Rule(rule) = &d[0] else {
+            panic!("expected a rule");
+        };
+        assert!(rule.actions.is_empty());
+    }
+
+    #[test]
+    fn xml_and_regex_selector_syntax_is_validated() {
+        // An XML selector must be an XPath starting with '/'.
+        assert!(matches!(
+            parse("SecRule XML:notxpath \"@rx x\" \"id:1\"\n", "t")
+                .unwrap_err()
+                .kind,
+            ParseErrorKind::Target { .. }
+        ));
+        // A regex selector must close its slash.
+        assert!(matches!(
+            parse("SecRule ARGS:/open \"@rx x\" \"id:1\"\n", "t")
+                .unwrap_err()
+                .kind,
+            ParseErrorKind::Target { .. }
+        ));
+        // Empty members between pipes are skipped, not an error.
+        let d = parse("SecRule ARGS||REQUEST_URI \"@rx x\" \"id:1\"\n", "t").unwrap();
+        let Directive::Rule(rule) = &d[0] else {
+            panic!()
+        };
+        assert_eq!(rule.targets.len(), 2);
+    }
+
+    #[test]
+    fn an_empty_target_list_is_an_error() {
+        assert!(parse("SecRule | \"@rx x\" \"id:1\"\n", "t").is_err());
+    }
+
+    #[test]
+    fn secaction_arity_and_action_errors_are_reported() {
+        assert!(matches!(
+            parse("SecAction a b\n", "t").unwrap_err().kind,
+            ParseErrorKind::Arity { .. }
+        ));
+        assert!(matches!(
+            parse("SecAction \"id:notnum\"\n", "t").unwrap_err().kind,
+            ParseErrorKind::Action(_)
+        ));
+    }
+
+    #[test]
+    fn secdefaultaction_parses_and_defaults_its_phase() {
+        // No phase given: defaults to phase 2.
+        let d = parse("SecDefaultAction \"pass,log\"\n", "t").unwrap();
+        assert!(matches!(
+            &d[0],
+            Directive::DefaultAction { phase, .. } if *phase == Phase::RequestBody
+        ));
+        assert!(parse("SecDefaultAction\n", "t").is_err());
+        assert!(parse("SecDefaultAction \"bogus:1\"\n", "t").is_err());
+    }
+
+    #[test]
+    fn secmarker_and_component_signature_arity_is_enforced() {
+        assert!(parse("SecMarker\n", "t").is_err());
+        let d = parse("SecComponentSignature \"OWASP_CRS/4.0.0\"\n", "t").unwrap();
+        assert_eq!(
+            d[0],
+            Directive::ComponentSignature("OWASP_CRS/4.0.0".into())
+        );
+        assert!(parse("SecComponentSignature\n", "t").is_err());
+    }
+
+    #[test]
+    fn a_paren_group_protects_commas_inside_an_action_list() {
+        let d = parse("SecAction \"id:1,setvar:tx.x=(a,b),pass\"\n", "t").unwrap();
+        let Directive::Action(rule) = &d[0] else {
+            panic!()
+        };
+        // id, setvar, pass -> the comma inside (a,b) did not split.
+        assert_eq!(rule.actions.len(), 3);
+    }
+
+    #[test]
+    fn a_trailing_continuation_still_yields_its_directive() {
+        // The last logical line ends on a continuation with no newline after.
+        let d = parse("SecAction \"id:1,pass\" \\", "t").unwrap();
+        assert_eq!(d.len(), 1);
+    }
+
+    #[test]
     fn error_messages_carry_file_and_line() {
         let err = parse("\n\nSecBogus x\n", "rules/REQUEST-942.conf").unwrap_err();
         assert_eq!(
