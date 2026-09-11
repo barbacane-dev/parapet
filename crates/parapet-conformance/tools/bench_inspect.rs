@@ -9,7 +9,7 @@
 //! ```text
 //! cp crs/rules/*.conf crs/rules/*.data bench-rules/
 //! cp crs/crs-setup.conf.example bench-rules/000-crs-setup.conf
-//! cargo run --release --bin bench_inspect -- bench-rules
+//! cargo run --release -p parapet-conformance --example bench_inspect -- bench-rules
 //! ```
 // A standalone measurement tool: it reads a rules directory and panics on any
 // malformed input rather than handling it, which is what you want from a
