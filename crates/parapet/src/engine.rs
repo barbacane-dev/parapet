@@ -592,9 +592,9 @@ mod tests {
     }
 
     #[test]
-    fn an_unimplemented_operator_is_a_compile_error() {
-        let err = compile_src(r#"SecRule ARGS "@detectSQLi" "id:1,phase:2,deny""#).unwrap_err();
-        assert!(matches!(err, CompileError::Operator { .. }));
+    fn the_libinjection_operators_compile() {
+        assert!(compile_src(r#"SecRule ARGS "@detectSQLi" "id:1,phase:2,deny""#).is_ok());
+        assert!(compile_src(r#"SecRule ARGS "@detectXSS" "id:2,phase:2,deny""#).is_ok());
     }
 
     #[test]

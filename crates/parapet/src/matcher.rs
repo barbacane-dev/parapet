@@ -226,6 +226,10 @@ pub enum CompiledOperator {
     ValidateUrlEncoding,
     /// `@unconditionalMatch`
     UnconditionalMatch,
+    /// `@detectSQLi`: libinjection SQL injection classifier.
+    DetectSqli,
+    /// `@detectXSS`: libinjection cross-site scripting classifier.
+    DetectXss,
 }
 
 impl CompiledOperator {
@@ -307,18 +311,8 @@ impl CompiledOperator {
             Operator::ValidateUtf8Encoding => CompiledOperator::ValidateUtf8Encoding,
             Operator::ValidateUrlEncoding => CompiledOperator::ValidateUrlEncoding,
             Operator::UnconditionalMatch => CompiledOperator::UnconditionalMatch,
-            Operator::DetectSqli => {
-                return Err(OperatorCompileError::NotImplemented {
-                    name: "detectSQLi",
-                    detail: "needs a libinjection SQL classifier, which is not integrated yet",
-                })
-            }
-            Operator::DetectXss => {
-                return Err(OperatorCompileError::NotImplemented {
-                    name: "detectXSS",
-                    detail: "needs a libinjection XSS classifier, which is not integrated yet",
-                })
-            }
+            Operator::DetectSqli => CompiledOperator::DetectSqli,
+            Operator::DetectXss => CompiledOperator::DetectXss,
         })
     }
 
@@ -408,6 +402,29 @@ impl CompiledOperator {
                 OperatorMatch::plain(!url_encoding_is_valid(subject))
             }
             CompiledOperator::UnconditionalMatch => OperatorMatch::plain(true),
+            CompiledOperator::DetectSqli => {
+                let result = libinjectionrs::detect_sqli(subject);
+                if !result.is_injection() {
+                    return OperatorMatch::plain(false);
+                }
+                if capture {
+                    // ModSecurity places the fingerprint in the first capture.
+                    let fp = result
+                        .fingerprint
+                        .as_ref()
+                        .map(|f| f.as_str().as_bytes().to_vec())
+                        .unwrap_or_default();
+                    OperatorMatch {
+                        matched: true,
+                        captures: vec![fp],
+                    }
+                } else {
+                    OperatorMatch::plain(true)
+                }
+            }
+            CompiledOperator::DetectXss => {
+                OperatorMatch::plain(libinjectionrs::detect_xss(subject).is_injection())
+            }
         }
     }
 }
@@ -721,15 +738,25 @@ mod tests {
     }
 
     #[test]
-    fn the_two_libinjection_operators_refuse_to_compile() {
-        // They parse, so a rule set using them is well-formed, but compiling
-        // them to something that never matches would be a silent bypass.
-        for spec in ["@detectSQLi", "@detectXSS"] {
-            let op = Operator::parse(spec).unwrap();
-            let err = CompiledOperator::compile(&op, &NoDataLoader)
-                .expect_err("must refuse until libinjection is integrated");
-            assert!(matches!(err, OperatorCompileError::NotImplemented { .. }));
-        }
+    fn detect_sqli_classifies_with_libinjection() {
+        assert!(matches("@detectSQLi", "1' OR '1'='1"));
+        assert!(matches("@detectSQLi", "1 UNION SELECT password FROM users"));
+        assert!(!matches("@detectSQLi", "hello world"));
+    }
+
+    #[test]
+    fn detect_xss_classifies_with_libinjection() {
+        assert!(matches("@detectXSS", "<script>alert(1)</script>"));
+        assert!(matches("@detectXSS", "<img src=x onerror=alert(1)>"));
+        assert!(!matches("@detectXSS", "hello world"));
+    }
+
+    #[test]
+    fn detect_sqli_captures_the_fingerprint() {
+        let m = compile("@detectSQLi").evaluate(b"1' OR '1'='1", &EmptyContext, true);
+        assert!(m.matched);
+        // The first capture is libinjection's fingerprint, a non-empty token.
+        assert!(!m.captures.first().map(Vec::is_empty).unwrap_or(true));
     }
 
     #[test]

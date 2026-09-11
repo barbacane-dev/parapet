@@ -265,11 +265,11 @@ fn operator_report(dir: &str) -> ExitCode {
         }
     }
 
-    // The refusal set is itself a gate. A newly refused operator means a rule
-    // silently stopped being enforceable, which is the thing this crate exists
-    // to make impossible; going the other way (a refusal disappearing because
-    // it got implemented) is fine.
-    const KNOWN_REFUSALS: &[&str] = &["detectSQLi", "detectXSS"];
+    // The refusal set is itself a gate. Every operator CRS uses compiles, so
+    // the set is empty: any operator that refuses is a rule that silently
+    // stopped being enforceable, which is the thing this crate exists to make
+    // impossible.
+    const KNOWN_REFUSALS: &[&str] = &[];
     let unexpected_refusals: Vec<&String> = refused
         .keys()
         .filter(|name| !KNOWN_REFUSALS.contains(&name.as_str()))

@@ -42,9 +42,8 @@ Every operator in a pinned CRS release must compile, including resolving the
 cargo run -p parapet-conformance -- operators coreruleset-4.9.0/rules
 ```
 
-Expected against v4.9.0: 18 distinct operators, 19 data files, 656 of 660
-operator instances compiling, and exactly two refusals (`@detectSQLi` and
-`@detectXSS`, 4 rules).
+Expected against v4.9.0: 18 distinct operators, 19 data files, all 660
+operator instances compiling, and no refusals.
 
 The refusal set is itself a gate. A newly refused operator means a rule
 silently stopped being enforceable; a refusal disappearing because it got
@@ -63,7 +62,7 @@ Blocking must come from CRS rule 949110 on accumulated anomaly score, the way a
 real deployment blocks, not from an individual rule denying. The corpus carries
 benign requests too: a false positive is as much a defect as a miss.
 
-Current state: 18 cases, **0 wrong verdicts**, 1 known gap.
+Current state: 18 cases, **0 wrong verdicts**, no known gaps.
 
 Two of the corpus expectations are worth reading, because both were wrong when
 first written and looked like engine bugs:
@@ -72,9 +71,8 @@ first written and looked like engine bugs:
   tagged `paranoia-level/2`, so CRS at the default level does not block it.
   Asserting the allow keeps a future change from silently raising the effective
   paranoia level.
-- `sqli tautology` is a `known_gap`, attributed to rule 942100 needing
-  `@detectSQLi`. Attributed gaps still run and still print; they just do not
-  fail the build.
+- `sqli tautology` is caught by rule 942100, the libinjection SQLi rule
+  (`@detectSQLi`).
 
 ## 5. Transformations against a reference implementation
 
