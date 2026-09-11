@@ -4,6 +4,8 @@
 //! `process_*` call runs the rules for that phase. Evaluation stops at the
 //! first disruptive action, as SecLang specifies.
 
+use std::borrow::Cow;
+
 use crate::action::{Ctl, RuleEngineMode, SetVarOp, Transformation};
 use crate::collections::{BodyError, CompiledTarget, OwnedValue, Variables};
 use crate::engine::{ChainLink, CompiledRule, Disruptive, RuleSet, SetVarSpec};
@@ -540,23 +542,33 @@ impl<'r> Transaction<'r> {
         let mut hit: Option<OwnedValue> = None;
 
         for value in values {
-            // `multiMatch` tests after every transformation, not only the last,
-            // so a payload that is detectable at an intermediate decoding
-            // stage is still caught.
-            let mut candidates: Vec<Vec<u8>> = Vec::new();
-            let mut current = value.value.to_vec();
-            if multi_match {
-                candidates.push(current.clone());
-            }
-            for t in transformations {
-                current = t.apply(&current).into_owned();
-                if multi_match {
-                    candidates.push(current.clone());
+            // The candidates to test, borrowing the resolved value where no copy
+            // is needed. Without transformations that is the value itself, tested
+            // in place. `multiMatch` also tests the value before and after each
+            // transformation, so a payload detectable at an intermediate decoding
+            // stage is still caught; without it only the fully transformed value
+            // is tested.
+            let candidates: Vec<Cow<[u8]>> = if multi_match {
+                let mut cs: Vec<Cow<[u8]>> = Vec::with_capacity(transformations.len() + 1);
+                let mut current: Cow<[u8]> = Cow::Borrowed(&value.value);
+                cs.push(current.clone());
+                for t in transformations {
+                    current = Cow::Owned(t.apply(&current).into_owned());
+                    cs.push(current.clone());
                 }
-            }
-            if !multi_match {
-                candidates.push(current);
-            }
+                cs
+            } else {
+                let mut current: Cow<[u8]> = Cow::Borrowed(&value.value);
+                for t in transformations {
+                    // A transformation that changes nothing (e.g. `t:none`, or
+                    // `t:lowercase` on already-lowercase input) returns a borrow;
+                    // only an actual change costs an allocation.
+                    if let Cow::Owned(changed) = t.apply(&current) {
+                        current = Cow::Owned(changed);
+                    }
+                }
+                vec![current]
+            };
 
             for candidate in candidates {
                 let result = operator.evaluate(&candidate, &self.vars, capture);
@@ -566,7 +578,7 @@ impl<'r> Transaction<'r> {
                     }
                     hit = Some(OwnedValue {
                         name: value.name.to_string(),
-                        value: candidate,
+                        value: candidate.into_owned(),
                     });
                     break;
                 }
@@ -1010,6 +1022,32 @@ SecRule ARGS "@rx attack" "id:3,phase:1,pass,setvar:'tx.reached=1'"
         assert_eq!(tx.process_request_headers(), Verdict::Allow);
 
         let mut tx = get(&rs, "/?other=attack");
+        assert!(matches!(tx.process_request_headers(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn a_noop_transformation_in_the_chain_does_not_break_matching() {
+        // `t:none` returns its input unchanged; the value still reaches the
+        // later `t:lowercase` and the anchored operator matches.
+        let rs = rules(r#"SecRule ARGS "@rx ^attack$" "id:1,phase:1,deny,t:none,t:lowercase""#);
+        let mut tx = get(&rs, "/?q=ATTACK");
+        assert!(matches!(tx.process_request_headers(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn a_rule_with_no_transformation_matches_the_raw_value() {
+        let rs = rules(r#"SecRule ARGS "@rx attack" "id:1,phase:1,deny""#);
+        let mut tx = get(&rs, "/?q=attack");
+        assert!(matches!(tx.process_request_headers(), Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn a_whole_collection_exclusion_does_not_catch_a_longer_collection() {
+        // `!ARGS` excludes the ARGS collection, not every collection whose name
+        // starts with "ARGS". A rule inspecting ARGS_GET with that exclusion
+        // must still see its members.
+        let rs = rules(r#"SecRule ARGS_GET|!ARGS "@rx attack" "id:1,phase:1,deny""#);
+        let mut tx = get(&rs, "/?q=attack");
         assert!(matches!(tx.process_request_headers(), Verdict::Deny { .. }));
     }
 
