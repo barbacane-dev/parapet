@@ -908,6 +908,60 @@ SecRule ARGS "@rx attack" "id:3,phase:1,pass,setvar:'tx.reached=1'"
     }
 
     #[test]
+    fn a_backward_skip_after_is_a_compile_error() {
+        // A marker before a rule that skips to it: evaluation would resume just
+        // after the marker, re-run the rule, and loop forever. It must be
+        // refused at compile time.
+        let directives = parse(
+            "SecMarker LOOP\nSecAction \"id:1,phase:1,pass,skipAfter:LOOP\"\n",
+            "test.conf",
+        )
+        .unwrap();
+        let err = RuleSet::compile(&directives, &NoDataLoader).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::engine::CompileError::BackwardSkip { .. }
+        ));
+    }
+
+    #[test]
+    fn a_forward_skip_after_still_compiles() {
+        let directives = parse(
+            "SecAction \"id:1,phase:1,pass,skipAfter:AHEAD\"\nSecMarker AHEAD\n",
+            "test.conf",
+        )
+        .unwrap();
+        assert!(RuleSet::compile(&directives, &NoDataLoader).is_ok());
+    }
+
+    #[test]
+    fn an_invalid_selector_regex_is_a_compile_error() {
+        // A member selector the regex engine cannot compile would select
+        // nothing at request time, turning the rule into a silent bypass. It is
+        // refused at compile time instead, exactly as an unsupported XPath is.
+        let directives = parse(
+            r#"SecRule ARGS:/(?=x)user/ "@rx attack" "id:1,phase:2,deny""#,
+            "test.conf",
+        )
+        .unwrap();
+        let err = RuleSet::compile(&directives, &NoDataLoader).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::engine::CompileError::InvalidSelector { .. }
+        ));
+    }
+
+    #[test]
+    fn a_valid_selector_regex_compiles() {
+        let directives = parse(
+            r#"SecRule REQUEST_COOKIES|!REQUEST_COOKIES:/__utm/ "@rx attack" "id:1,phase:2,deny""#,
+            "test.conf",
+        )
+        .unwrap();
+        assert!(RuleSet::compile(&directives, &NoDataLoader).is_ok());
+    }
+
+    #[test]
     fn a_dangling_chain_is_a_compile_error() {
         let directives = parse(
             r#"SecRule ARGS "@rx x" "id:1,phase:1,deny,chain""#,
