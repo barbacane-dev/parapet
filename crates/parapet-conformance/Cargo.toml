@@ -17,3 +17,9 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+# Standalone per-request cost benchmark. Run against a CRS rules directory that
+# includes crs-setup: see the file header.
+[[bin]]
+name = "bench_inspect"
+path = "tools/bench_inspect.rs"
