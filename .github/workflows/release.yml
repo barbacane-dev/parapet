@@ -1,0 +1,36 @@
+name: Release
+
+# Publishes barbacane-waf to crates.io when a version tag is pushed. The tag
+# must match the version in crates/parapet/Cargo.toml. Requires a
+# CARGO_REGISTRY_TOKEN secret (org-level, or set on this repo).
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check tag matches crate version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          VER="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' crates/parapet/Cargo.toml | head -1)"
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::tag v$TAG does not match crate version $VER"
+            exit 1
+          fi
+          echo "Publishing version $VER"
+
+      - name: Publish
+        run: cargo publish -p barbacane-waf --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"

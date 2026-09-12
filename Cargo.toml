@@ -10,7 +10,7 @@ repository = "https://github.com/barbacane-dev/parapet"
 authors = ["Parapet contributors"]
 
 [workspace.dependencies]
-libinjectionrs = { git = "https://github.com/barbacane-dev/libinjectionrs", rev = "7f35f8097e9dd06005334a0c8f50661ce544a8df" }
+libinjectionrs = { package = "barbacane-libinjection", version = "0.1.1" }
 quick-xml = "0.42"
 regex = "1.12"
 regex-syntax = "0.8"
