@@ -1,6 +1,6 @@
 [package]
-name = "parapet"
-version = "0.0.0"
+name = "barbacane-waf"
+version = "0.1.0"
 description = "A SecLang rule engine in pure Rust, compatible with the OWASP Core Rule Set"
 keywords = ["waf", "seclang", "modsecurity", "security", "firewall"]
 categories = ["network-programming", "web-programming"]
@@ -10,6 +10,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+
+# The published package is barbacane-waf; the library target keeps the name
+# parapet, so code using `parapet::` is unchanged.
+[lib]
+name = "parapet"
 
 [dependencies]
 aho-corasick.workspace = true

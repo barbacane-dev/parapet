@@ -12,6 +12,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "barbacane-libinjection"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "836db2b79f5f4133d5e64aa99254833016ea0e8b74b306bee79db3c9716c8fba"
+dependencies = [
+ "bitflags",
+ "serde_json",
+ "smallvec",
+]
+
+[[package]]
+name = "barbacane-waf"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "barbacane-libinjection",
+ "quick-xml",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha1",
+ "thiserror",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -84,40 +109,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
-name = "libinjectionrs"
-version = "0.1.1"
-source = "git+https://github.com/barbacane-dev/libinjectionrs?rev=7f35f8097e9dd06005334a0c8f50661ce544a8df#7f35f8097e9dd06005334a0c8f50661ce544a8df"
-dependencies = [
- "bitflags",
- "serde_json",
- "smallvec",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
-name = "parapet"
-version = "0.0.0"
-dependencies = [
- "aho-corasick",
- "libinjectionrs",
- "quick-xml",
- "regex",
- "serde",
- "serde_json",
- "sha1",
- "thiserror",
-]
-
-[[package]]
 name = "parapet-conformance"
 version = "0.0.0"
 dependencies = [
- "parapet",
+ "barbacane-waf",
  "regex",
  "serde",
  "serde_json",
