@@ -1,6 +1,6 @@
 [package]
 name = "barbacane-waf"
-version = "0.1.0"
+version = "0.1.1"
 description = "A SecLang rule engine in pure Rust, compatible with the OWASP Core Rule Set"
 keywords = ["waf", "seclang", "modsecurity", "security", "firewall"]
 categories = ["network-programming", "web-programming"]

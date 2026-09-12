@@ -349,8 +349,10 @@ impl<'r> Transaction<'r> {
     }
 
     fn run_phase(&mut self, phase: Phase) -> Verdict {
-        // A disruptive action already fired; later phases do not run.
-        if self.verdict != Verdict::Allow {
+        // A disruptive verdict stops later phases, except phase 5 (logging),
+        // which runs on every transaction so a blocked transaction is still
+        // logged and its correlation rules run, matching ModSecurity.
+        if self.verdict != Verdict::Allow && phase != Phase::Logging {
             return self.verdict.clone();
         }
 
@@ -390,7 +392,9 @@ impl<'r> Transaction<'r> {
                 | Some(Disruptive::Block)
                 | Some(Disruptive::Drop)
                 | Some(Disruptive::Redirect) => {
-                    if self.mode == EngineMode::Blocking {
+                    // Phase 5 cannot intercept: a disruptive action there never
+                    // changes the verdict, so logging preserves an earlier block.
+                    if self.mode == EngineMode::Blocking && phase != Phase::Logging {
                         self.verdict = Verdict::Deny {
                             status: rule.status.unwrap_or(403),
                             rule_id: rule.id.unwrap_or(0),
@@ -1430,6 +1434,72 @@ SecRule ARGS "@rx attack" "id:1,phase:1,block"
         tx.process_request_headers();
         assert_eq!(tx.process_logging(), Verdict::Allow);
         assert_eq!(tx.vars.tx_get("logged"), Some(&b"1"[..]));
+    }
+
+    #[test]
+    fn phase_five_logging_runs_after_a_block() {
+        // A phase-2 block must not stop phase 5: the logging phase runs on a
+        // blocked transaction too, and its verdict is unchanged.
+        let rs = rules(
+            r#"
+SecRule ARGS "@rx attack" "id:1,phase:2,deny,status:403"
+SecAction "id:2,phase:5,pass,setvar:'tx.logged=1'"
+"#,
+        );
+        let mut tx = get(&rs, "/?q=attack");
+        tx.process_request_headers();
+        assert!(matches!(
+            tx.process_request_body(),
+            Verdict::Deny { rule_id: 1, .. }
+        ));
+        assert!(matches!(
+            tx.process_logging(),
+            Verdict::Deny { rule_id: 1, .. }
+        ));
+        assert_eq!(
+            tx.vars.tx_get("logged"),
+            Some(&b"1"[..]),
+            "phase 5 must run and apply its setvar even after a block"
+        );
+        assert!(tx.matched_ids().contains(&2), "the phase-5 rule must match");
+    }
+
+    #[test]
+    fn a_disruptive_action_in_phase_five_does_not_change_the_verdict() {
+        // Phase 5 cannot intercept. A (malformed) deny there is ignored and an
+        // allowed transaction stays allowed.
+        let rs = rules(r#"SecRule REMOTE_ADDR "@rx ." "id:1,phase:5,deny,status:403""#);
+        let mut tx = get(&rs, "/");
+        tx.set_remote_addr("203.0.113.7");
+        tx.process_request_headers();
+        assert_eq!(tx.process_logging(), Verdict::Allow);
+    }
+
+    #[test]
+    fn a_phase_three_block_still_skips_phase_four() {
+        // Only phase 5 is exempt from the stop-after-block rule.
+        let rs = rules(
+            r#"
+SecRule RESPONSE_HEADERS:X-Leak "@streq yes" "id:1,phase:3,deny,status:403"
+SecRule RESPONSE_BODY "@rx secret" "id:2,phase:4,pass,setvar:'tx.body_ran=1'"
+"#,
+        );
+        let mut tx = get(&rs, "/");
+        tx.process_request_headers();
+        tx.process_request_body();
+        tx.set_response_status(200);
+        tx.add_response_header("X-Leak", "yes");
+        assert!(matches!(
+            tx.process_response_headers(),
+            Verdict::Deny { rule_id: 1, .. }
+        ));
+        tx.set_response_body(b"this leaks a secret");
+        tx.process_response_body();
+        assert_eq!(
+            tx.vars.tx_get("body_ran"),
+            None,
+            "phase 4 must not run after a phase-3 block"
+        );
     }
 
     #[test]
