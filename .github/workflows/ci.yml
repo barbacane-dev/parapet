@@ -25,8 +25,8 @@ jobs:
       - run: cargo test --workspace
       # The serde feature is how a host seals a validated rule set into its
       # own artifact, so it is part of the public surface and gets checked.
-      - run: cargo clippy -p parapet --features serde --all-targets -- -D warnings
-      - run: cargo test -p parapet --features serde
+      - run: cargo clippy -p barbacane-waf --features serde --all-targets -- -D warnings
+      - run: cargo test -p barbacane-waf --features serde
 
   # Line coverage of the library, source-based instrumentation via
   # cargo-llvm-cov. COVERAGE_FLOOR is enforced: raise it when the real number
@@ -47,7 +47,7 @@ jobs:
       - name: Measure coverage
         # Run the instrumented tests once, then format the same data three ways.
         run: |
-          cargo llvm-cov --no-report -p parapet --all-features --lib
+          cargo llvm-cov --no-report -p barbacane-waf --all-features --lib
           cargo llvm-cov report --summary-only | tee coverage.txt
           cargo llvm-cov report --lcov --output-path lcov.info
       - name: Publish summary
