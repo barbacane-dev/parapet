@@ -110,7 +110,7 @@ impl Operator {
             name: name.to_string(),
             detail,
         };
-        let num = |arg: &str| Numeric::parse(arg).map_err(&bad);
+        let num = |arg: &str| Numeric::parse(arg).map_err(bad);
 
         Ok(match name {
             "rx" => Operator::Rx(arg.to_string()),
